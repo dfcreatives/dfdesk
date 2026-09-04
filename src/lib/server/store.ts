@@ -1,22 +1,29 @@
 import "server-only";
 
 import { createHash, randomBytes, randomUUID, scrypt as scryptCallback, timingSafeEqual } from "node:crypto";
-import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
-import path from "node:path";
 import { promisify } from "node:util";
+import type { PoolClient } from "pg";
 import type {
   Employee,
+  IntegrationSyncState,
+  Order,
+  PaymentRecord,
   SessionUser,
   StaffMember,
   UserRole,
   Workspace,
 } from "@/lib/fieldflow";
 import { emptyWorkspace } from "@/lib/fieldflow";
+import {
+  DESK_STATUS_EVENT,
+  INTEGRATION_CLIENT_ID,
+  type CommerceOrderPaidEvent,
+  type DeskStatusChangedEvent,
+} from "@/lib/integrations/contracts";
+import { queryDatabase } from "@/lib/server/database";
 
 const scrypt = promisify(scryptCallback);
 const SESSION_TTL_MS = 1000 * 60 * 60 * 24 * 14;
-const DATA_DIRECTORY = path.join(process.cwd(), ".data");
-const DATA_FILE = process.env.FIELDFLOW_DATA_FILE ?? path.join(DATA_DIRECTORY, "fieldflow.json");
 
 type StoredEmployee = Omit<Employee, "password"> & { passwordHash: string };
 type StoredStaff = Omit<StaffMember, "password"> & { passwordHash: string };
@@ -41,41 +48,158 @@ const initialDatabase = (): Database => ({
   revision: 0,
 });
 
-let writeQueue: Promise<unknown> = Promise.resolve();
-
 async function readDatabase(): Promise<Database> {
-  try {
-    const raw = await readFile(DATA_FILE, "utf8");
-    const parsed = JSON.parse(raw) as Database;
-    return { ...initialDatabase(), ...parsed };
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
-    const database = initialDatabase();
-    await writeDatabase(database);
-    return database;
+  return queryDatabase(async (client) => {
+    const initial = initialDatabase();
+    await client.query(
+      `INSERT INTO fieldflow_state (id, data, revision)
+       VALUES (1, $1::jsonb, 0)
+       ON CONFLICT (id) DO NOTHING`,
+      [JSON.stringify(initial)],
+    );
+    const result = await client.query(
+      "SELECT data, revision FROM fieldflow_state WHERE id = 1",
+    );
+    const row = result.rows[0] as { data: Database; revision: string } | undefined;
+    if (!row) throw new Error("The database state could not be initialized.");
+    return {
+      ...initial,
+      ...row.data,
+      revision: Number(row.revision),
+    };
+  });
+}
+
+function mutate<T>(
+  operation: (database: Database, client: PoolClient) => Promise<T> | T,
+): Promise<T> {
+  return queryDatabase(async (client) => {
+    await client.query("BEGIN");
+    try {
+      const initial = initialDatabase();
+      await client.query(
+        `INSERT INTO fieldflow_state (id, data, revision)
+         VALUES (1, $1::jsonb, 0)
+         ON CONFLICT (id) DO NOTHING`,
+        [JSON.stringify(initial)],
+      );
+      const selected = await client.query(
+        "SELECT data, revision FROM fieldflow_state WHERE id = 1 FOR UPDATE",
+      );
+      const row = selected.rows[0] as
+        | { data: Database; revision: string }
+        | undefined;
+      if (!row) throw new Error("The database state could not be initialized.");
+      const database: Database = {
+        ...initial,
+        ...row.data,
+        revision: Number(row.revision),
+      };
+      const result = await operation(database, client);
+      database.revision += 1;
+      await client.query(
+        `UPDATE fieldflow_state
+         SET data = $1::jsonb, revision = $2, updated_at = NOW()
+         WHERE id = 1`,
+        [JSON.stringify(database), database.revision],
+      );
+      await client.query("COMMIT");
+      return result;
+    } catch (error) {
+      await client.query("ROLLBACK");
+      throw error;
+    }
+  });
+}
+
+const COMMERCE_ORDER_FIELDS = [
+  "source",
+  "externalOrderId",
+  "externalOrderNumber",
+  "importPayloadHash",
+  "customer",
+  "customerMobile",
+  "customerEmail",
+  "item",
+  "value",
+  "advanceAmount",
+  "advancePaymentMethod",
+  "shippingAddress",
+  "lineItems",
+  "subtotalPaise",
+  "discountPaise",
+  "shippingPaise",
+  "totalPaise",
+  "paidPaise",
+  "balanceDuePaise",
+  "currency",
+  "paymentProvider",
+  "paymentReference",
+  "paymentMethod",
+  "partialPayment",
+  "placedAt",
+  "paidAt",
+  "promisedDeliveryAt",
+  "commerceStatus",
+  "createdAt",
+] as const satisfies readonly (keyof Order)[];
+
+function protectCommerceOrder(incoming: Order, current: Order) {
+  const protectedOrder = { ...incoming };
+  for (const key of COMMERCE_ORDER_FIELDS) {
+    Object.assign(protectedOrder, { [key]: current[key] });
   }
+  return protectedOrder;
 }
 
-async function writeDatabase(database: Database) {
-  await mkdir(path.dirname(DATA_FILE), { recursive: true });
-  const temporaryFile = `${DATA_FILE}.${process.pid}.${randomUUID()}.tmp`;
-  await writeFile(temporaryFile, JSON.stringify(database, null, 2), {
-    encoding: "utf8",
-    mode: 0o600,
-  });
-  await rename(temporaryFile, DATA_FILE);
+function statusForFrames(status: string) {
+  if (status === "In progress") return "PROCESSING" as const;
+  if (status === "Completed") return "READY_TO_SHIP" as const;
+  if (status === "Cancelled") return "CANCELLED" as const;
+  return null;
 }
 
-function mutate<T>(operation: (database: Database) => Promise<T> | T): Promise<T> {
-  const pending = writeQueue.then(async () => {
-    const database = await readDatabase();
-    const result = await operation(database);
-    database.revision += 1;
-    await writeDatabase(database);
-    return result;
-  });
-  writeQueue = pending.catch(() => undefined);
-  return pending;
+async function enqueueCommerceStatusChanges(
+  client: PoolClient,
+  previous: Order[],
+  current: Order[],
+  actor: SessionUser,
+) {
+  const previousById = new Map(previous.map((order) => [order.id, order]));
+  for (const order of current) {
+    if (order.source !== "Frames 41" || !order.externalOrderId || !order.externalOrderNumber) {
+      continue;
+    }
+    const before = previousById.get(order.id);
+    if (!before || before.status === order.status) continue;
+    const commerceStatus = statusForFrames(order.status);
+    if (!commerceStatus) continue;
+    const eventId = randomUUID();
+    const event: DeskStatusChangedEvent = {
+      eventId,
+      eventType: DESK_STATUS_EVENT,
+      eventVersion: 1,
+      occurredAt: new Date().toISOString(),
+      source: "desk",
+      clientId: INTEGRATION_CLIENT_ID,
+      correlationId: randomUUID(),
+      aggregateId: order.externalOrderId,
+      payload: {
+        externalOrderId: order.externalOrderId,
+        externalOrderNumber: order.externalOrderNumber,
+        deskOrderId: order.id,
+        deskStatus: order.status as DeskStatusChangedEvent["payload"]["deskStatus"],
+        commerceStatus,
+        changedBy: { id: actor.id, name: actor.name, role: actor.role },
+      },
+    };
+    await client.query(
+      `INSERT INTO fieldflow_integration_outbox
+         (event_id, client_id, event_type, aggregate_id, payload)
+       VALUES ($1, $2, $3, $4, $5::jsonb)`,
+      [eventId, INTEGRATION_CLIENT_ID, DESK_STATUS_EVENT, order.externalOrderId, JSON.stringify(event)],
+    );
+  }
 }
 
 async function hashPassword(password: string) {
@@ -219,6 +343,187 @@ export async function getWorkspace(actor: SessionUser) {
   return workspaceFor(await readDatabase(), actor);
 }
 
+function importedOrderId(orderNumber: string, existing: Order[]) {
+  const base = `#F41-${orderNumber.replace(/[^a-zA-Z0-9-]/g, "").slice(-24)}`;
+  if (!existing.some((order) => order.id === base)) return base;
+  return `${base}-${randomUUID().slice(0, 6)}`;
+}
+
+function formatImportedRupees(paise: number) {
+  return new Intl.NumberFormat("en-IN", {
+    style: "currency",
+    currency: "INR",
+    maximumFractionDigits: 2,
+  }).format(paise / 100);
+}
+
+export async function importCommerceOrder(
+  event: CommerceOrderPaidEvent,
+  payloadHash: string,
+) {
+  return mutate(async (database, client) => {
+    const inserted = await client.query(
+      `INSERT INTO fieldflow_integration_inbox
+         (event_id, client_id, event_type, aggregate_id, payload_hash, payload)
+       VALUES ($1, $2, $3, $4, $5, $6::jsonb)
+       ON CONFLICT (event_id) DO NOTHING
+       RETURNING event_id`,
+      [
+        event.eventId,
+        event.clientId,
+        event.eventType,
+        event.aggregateId,
+        payloadHash,
+        JSON.stringify(event),
+      ],
+    );
+
+    if (!inserted.rowCount) {
+      const existingEvent = await client.query(
+        "SELECT payload_hash FROM fieldflow_integration_inbox WHERE event_id = $1",
+        [event.eventId],
+      );
+      if (existingEvent.rows[0]?.payload_hash !== payloadHash) {
+        throw new Error("The event ID has already been used with a different payload.");
+      }
+      const order = database.orders.find(
+        (entry) => entry.externalOrderId === event.payload.externalOrderId,
+      );
+      if (!order) throw new Error("The duplicate event has no matching Desk order.");
+      return { order, duplicate: true };
+    }
+
+    const existingOrder = database.orders.find(
+      (entry) => entry.externalOrderId === event.payload.externalOrderId,
+    );
+    if (existingOrder) {
+      if (existingOrder.importPayloadHash !== payloadHash) {
+        throw new Error("This Frames 41 order was previously imported with different data.");
+      }
+      await client.query(
+        "UPDATE fieldflow_integration_inbox SET processed_at = NOW() WHERE event_id = $1",
+        [event.eventId],
+      );
+      return { order: existingOrder, duplicate: true };
+    }
+
+    const payload = event.payload;
+    const order: Order = {
+      id: importedOrderId(payload.externalOrderNumber, database.orders),
+      createdAt: Date.parse(payload.placedAt),
+      source: "Frames 41",
+      externalOrderId: payload.externalOrderId,
+      externalOrderNumber: payload.externalOrderNumber,
+      importPayloadHash: payloadHash,
+      customer: payload.customer.name,
+      customerMobile: payload.customer.phone,
+      customerEmail: payload.customer.email,
+      item: payload.items.map((item) => `${item.name} × ${item.quantity}`).join(", "),
+      value: formatImportedRupees(payload.amounts.totalPaise),
+      advanceAmount: payload.amounts.paidPaise / 100,
+      advancePaymentMethod: "Razorpay",
+      shippingAddress: payload.shippingAddress,
+      lineItems: payload.items,
+      subtotalPaise: payload.amounts.subtotalPaise,
+      discountPaise: payload.amounts.discountPaise,
+      shippingPaise: payload.amounts.shippingPaise,
+      totalPaise: payload.amounts.totalPaise,
+      paidPaise: payload.amounts.paidPaise,
+      balanceDuePaise: payload.amounts.balanceDuePaise,
+      currency: "INR",
+      paymentProvider: "Razorpay",
+      paymentReference: payload.payment.paymentId,
+      paymentMethod: payload.payment.method,
+      partialPayment: payload.payment.isPartial,
+      placedAt: payload.placedAt,
+      paidAt: payload.paidAt,
+      promisedDeliveryAt: payload.promisedDeliveryAt,
+      commerceStatus: payload.commerceStatus,
+      deadline: payload.promisedDeliveryAt.slice(0, 10),
+      status: "Pending",
+      color: "orange",
+    };
+    const payment: PaymentRecord = {
+      id: `commerce-${payload.payment.paymentId}`,
+      orderId: order.id,
+      source: "Commerce",
+      customer: payload.customer.name,
+      cashAmount: 0,
+      upiAmount: payload.amounts.paidPaise / 100,
+      total: payload.amounts.paidPaise / 100,
+      method: "Razorpay",
+      upiReference: payload.payment.paymentId,
+      createdAt: Date.parse(payload.payment.capturedAt),
+    };
+    database.orders.unshift(order);
+    database.payments.push(payment);
+    await client.query(
+      "UPDATE fieldflow_integration_inbox SET processed_at = NOW() WHERE event_id = $1",
+      [event.eventId],
+    );
+    return { order, duplicate: false };
+  });
+}
+
+export async function getIntegrationSyncState(
+  actor: SessionUser,
+  orderId: string,
+): Promise<IntegrationSyncState | null> {
+  if (actor.role === "Employee") throw new Error("Staff access is required.");
+  return queryDatabase(async (client) => {
+    const result = await client.query(
+      `SELECT event_id, status, attempts, max_attempts, last_error, delivered_at, updated_at
+       FROM fieldflow_integration_outbox
+       WHERE payload->'payload'->>'deskOrderId' = $1
+       ORDER BY created_at DESC
+       LIMIT 1`,
+      [orderId],
+    );
+    const row = result.rows[0] as
+      | {
+          event_id: string;
+          status: IntegrationSyncState["status"];
+          attempts: number;
+          max_attempts: number;
+          last_error: string | null;
+          delivered_at: Date | null;
+          updated_at: Date;
+        }
+      | undefined;
+    return row
+      ? {
+          eventId: row.event_id,
+          status: row.status,
+          attempts: row.attempts,
+          maxAttempts: row.max_attempts,
+          lastError: row.last_error,
+          deliveredAt: row.delivered_at?.toISOString() ?? null,
+          updatedAt: row.updated_at.toISOString(),
+        }
+      : null;
+  });
+}
+
+export async function retryIntegrationSync(actor: SessionUser, orderId: string) {
+  if (actor.role === "Employee") throw new Error("Staff access is required.");
+  return queryDatabase(async (client) => {
+    const result = await client.query(
+      `UPDATE fieldflow_integration_outbox
+       SET status = 'PENDING', attempts = 0, next_attempt_at = NOW(),
+           locked_at = NULL, locked_by = NULL, last_error = NULL, updated_at = NOW()
+       WHERE event_id = (
+         SELECT event_id FROM fieldflow_integration_outbox
+         WHERE payload->'payload'->>'deskOrderId' = $1 AND status = 'FAILED'
+         ORDER BY created_at DESC LIMIT 1
+       )
+       RETURNING event_id`,
+      [orderId],
+    );
+    if (!result.rowCount) throw new Error("No failed Frames 41 sync was found.");
+    return getIntegrationSyncState(actor, orderId);
+  });
+}
+
 function cleanText(value: unknown, field: string, maxLength = 160) {
   if (typeof value !== "string") throw new Error(`${field} must be text.`);
   const cleaned = value.trim();
@@ -355,6 +660,15 @@ function validateWorkspace(input: unknown): Workspace {
     }),
   );
   workspace.orders.forEach((entry) => cleanText(entry.id, "Order id"));
+  workspace.orders.forEach((entry) => {
+    if (entry.source === "Frames 41") {
+      cleanText(entry.externalOrderId, "External order id");
+      cleanText(entry.externalOrderNumber, "External order number");
+      if (!Array.isArray(entry.lineItems) || !entry.lineItems.length) {
+        throw new Error("Imported orders must keep their line items.");
+      }
+    }
+  });
   workspace.payments.forEach((entry) => cleanText(entry.id, "Payment id"));
   return workspace;
 }
@@ -387,7 +701,8 @@ async function mergeStaff(incoming: StaffMember[], current: StoredStaff[]) {
 
 export async function saveWorkspace(input: unknown, actor: SessionUser) {
   const incoming = validateWorkspace(input);
-  return mutate(async (database) => {
+  return mutate(async (database, client) => {
+    const previousOrders = database.orders.map((order) => ({ ...order }));
     if (actor.role === "Employee") {
       const currentEmployee = database.employees.find((entry) => entry.id === actor.id);
       const nextEmployee = incoming.employees.find((entry) => entry.id === actor.id);
@@ -441,6 +756,7 @@ export async function saveWorkspace(input: unknown, actor: SessionUser) {
           }
         }
       }
+      await enqueueCommerceStatusChanges(client, previousOrders, database.orders, actor);
       return workspaceFor(database, actor);
     }
 
@@ -456,12 +772,45 @@ export async function saveWorkspace(input: unknown, actor: SessionUser) {
     database.employees = await mergeEmployees(incomingEmployees, database.employees);
     database.staff = await mergeStaff(incoming.staff, database.staff);
     database.tasks = incoming.tasks;
-    database.orders = incoming.orders;
-    database.payments = incoming.payments;
+
+    const currentImportedOrders = database.orders.filter(
+      (order) => order.source === "Frames 41",
+    );
+    for (const current of currentImportedOrders) {
+      if (!incoming.orders.some((order) => order.id === current.id)) {
+        throw new Error("Frames 41 orders cannot be deleted from Desk.");
+      }
+    }
+    database.orders = incoming.orders.map((order) => {
+      const current = database.orders.find((entry) => entry.id === order.id);
+      if (order.source === "Frames 41" && !current) {
+        throw new Error("Frames 41 orders can only be created by the integration API.");
+      }
+      return current?.source === "Frames 41"
+        ? protectCommerceOrder(order, current)
+        : { ...order, source: order.source ?? "Desk" };
+    });
+
+    const currentCommercePayments = database.payments.filter(
+      (payment) => payment.source === "Commerce",
+    );
+    for (const current of currentCommercePayments) {
+      if (!incoming.payments.some((payment) => payment.id === current.id)) {
+        throw new Error("Frames 41 payment records cannot be deleted from Desk.");
+      }
+    }
+    database.payments = incoming.payments.map((payment) => {
+      const current = database.payments.find((entry) => entry.id === payment.id);
+      if (payment.source === "Commerce" && !current) {
+        throw new Error("Commerce payments can only be created by the integration API.");
+      }
+      return current?.source === "Commerce" ? current : payment;
+    });
 
     if (!database.staff.some((member) => member.role === "Admin")) {
       throw new Error("The workspace must keep at least one admin account.");
     }
+    await enqueueCommerceStatusChanges(client, previousOrders, database.orders, actor);
     return workspaceFor(database, actor);
   });
 }

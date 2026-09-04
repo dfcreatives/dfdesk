@@ -17,7 +17,10 @@ import {
   CircleDollarSign,
   Clock3,
   CreditCard,
+  Eye,
+  EyeOff,
   LayoutDashboard,
+  LockKeyhole,
   LogOut,
   MoreHorizontal,
   PackageCheck,
@@ -29,6 +32,7 @@ import {
   ShoppingBag,
   SlidersHorizontal,
   Trash2,
+  UserRound,
   UserPlus,
   Users,
   WalletCards,
@@ -38,6 +42,7 @@ import { usePathname } from "next/navigation";
 import type {
   AttendanceRecord,
   Employee,
+  IntegrationSyncState,
   Order,
   PaymentMethod,
   PaymentRecord,
@@ -170,6 +175,34 @@ function formatRupees(amount: number) {
     maximumFractionDigits: 0,
   }).format(amount);
 }
+function formatPaise(amount: number | undefined) {
+  return formatRupees((amount ?? 0) / 100);
+}
+function customizationImageUrls(value: Record<string, unknown> | undefined) {
+  if (!value) return [];
+  const urls = new Set<string>();
+  const visit = (entry: unknown, key = "") => {
+    if (
+      typeof entry === "string" &&
+      /image|photo|artwork|asset/i.test(key) &&
+      /^https?:\/\//i.test(entry)
+    ) {
+      urls.add(entry);
+      return;
+    }
+    if (Array.isArray(entry)) {
+      entry.forEach((item) => visit(item, key));
+      return;
+    }
+    if (entry && typeof entry === "object") {
+      Object.entries(entry as Record<string, unknown>).forEach(([nestedKey, nestedValue]) =>
+        visit(nestedValue, nestedKey),
+      );
+    }
+  };
+  visit(value);
+  return [...urls].slice(0, 12);
+}
 function parseRupeesInput(value: string) {
   const amount = Number(value.replace(/[^\d.]/g, ""));
   return Number.isFinite(amount) && amount > 0 ? amount : 0;
@@ -260,6 +293,10 @@ export default function FieldflowApp({
   const [orderDeadline, setOrderDeadline] = useState("");
   const [orderStatus, setOrderStatus] = useState("Pending");
   const [orderError, setOrderError] = useState("");
+  const [integrationSync, setIntegrationSync] =
+    useState<IntegrationSyncState | null>(null);
+  const [integrationSyncLoading, setIntegrationSyncLoading] = useState(false);
+  const [integrationSyncError, setIntegrationSyncError] = useState("");
   const [showEmployeeForm, setShowEmployeeForm] = useState(false);
   const [editingEmployee, setEditingEmployee] = useState<Employee | null>(null);
   const [employeeName, setEmployeeName] = useState("");
@@ -273,6 +310,7 @@ export default function FieldflowApp({
   const [staffPassword, setStaffPassword] = useState("");
   const [loginName, setLoginName] = useState("");
   const [loginPassword, setLoginPassword] = useState("");
+  const [showLoginPassword, setShowLoginPassword] = useState(false);
   const [loginError, setLoginError] = useState("");
   const [accountName, setAccountName] = useState("");
   const [accountCurrentPassword, setAccountCurrentPassword] = useState("");
@@ -408,6 +446,24 @@ export default function FieldflowApp({
     staffData,
     taskData,
   ]);
+
+  useEffect(() => {
+    if (!isHydrated || !currentUser || currentUser.role === "Employee") return;
+    let cancelled = false;
+    const refreshWorkspace = () => {
+      if (document.visibilityState !== "visible") return;
+      apiRequest<{ workspace: Workspace }>("/api/workspace", { cache: "no-store" })
+        .then(({ workspace }) => {
+          if (!cancelled) applyWorkspace(workspace);
+        })
+        .catch(() => undefined);
+    };
+    const interval = window.setInterval(refreshWorkspace, 15_000);
+    return () => {
+      cancelled = true;
+      window.clearInterval(interval);
+    };
+  }, [currentUser, isHydrated]);
 
   useEffect(() => {
     const canRefreshTeam =
@@ -1366,14 +1422,24 @@ export default function FieldflowApp({
           (payment) => payment.orderId === order.id && payment.source === "Advance",
         )
       : undefined;
-    setOrderAdvanceMethod(
-      order?.advancePaymentMethod ??
-        (savedAdvancePayment?.method === "Cash" ? "Cash" : "UPI"),
-    );
+    const savedMethod = order?.advancePaymentMethod ?? savedAdvancePayment?.method;
+    setOrderAdvanceMethod(savedMethod === "Cash" ? "Cash" : "UPI");
     setOrderDeadline(order?.deadline ?? "");
     setOrderStatus(order?.status ?? "Pending");
     setOrderError("");
+    setIntegrationSync(null);
+    setIntegrationSyncError("");
     setShowOrderForm(true);
+    if (order?.source === "Frames 41" && currentUser?.role !== "Employee") {
+      setIntegrationSyncLoading(true);
+      apiRequest<{ sync: IntegrationSyncState | null }>(
+        `/api/v1/integrations/status/${encodeURIComponent(order.id)}`,
+        { cache: "no-store" },
+      )
+        .then(({ sync }) => setIntegrationSync(sync))
+        .catch((error: Error) => setIntegrationSyncError(error.message))
+        .finally(() => setIntegrationSyncLoading(false));
+    }
   }
 
   function saveOrder() {
@@ -1407,7 +1473,14 @@ export default function FieldflowApp({
           : "orange";
     const createdAt = editingOrder?.createdAt ?? Date.now();
     const resolvedDeadline = resolveOrderDeadline(orderDeadline, createdAt);
-    const order: Order = {
+    const order: Order = editingOrder?.source === "Frames 41"
+      ? {
+          ...editingOrder,
+          deadline: resolvedDeadline,
+          status: orderStatus,
+          color: statusColor,
+        }
+      : {
       id: editingOrder?.id ?? `#FF-${String(Date.now()).slice(-5)}`,
       createdAt,
       customer,
@@ -1428,7 +1501,7 @@ export default function FieldflowApp({
         : [order, ...current],
     );
     const advancePaymentId = `advance-${order.id}`;
-    setPaymentRecords((current) => {
+    if (order.source !== "Frames 41") setPaymentRecords((current) => {
       const existingPayment = current.find(
         (payment) => payment.id === advancePaymentId,
       );
@@ -1470,6 +1543,23 @@ export default function FieldflowApp({
     setOrderDeadline("");
     setOrderStatus("Pending");
     setOrderError("");
+  }
+
+  async function retryFramesSync() {
+    if (!editingOrder) return;
+    setIntegrationSyncLoading(true);
+    setIntegrationSyncError("");
+    try {
+      const response = await apiRequest<{ sync: IntegrationSyncState | null }>(
+        `/api/v1/integrations/status/${encodeURIComponent(editingOrder.id)}`,
+        { method: "POST" },
+      );
+      setIntegrationSync(response.sync);
+    } catch (error) {
+      setIntegrationSyncError(error instanceof Error ? error.message : "Unable to retry sync.");
+    } finally {
+      setIntegrationSyncLoading(false);
+    }
   }
 
   function deleteOrder(order: Order) {
@@ -2045,7 +2135,7 @@ export default function FieldflowApp({
 
   if (!isHydrated) {
     return (
-      <main className="login-page">
+      <main className="login-page login-loading">
         <section className="login-card loading-card" aria-live="polite">
           <Image
             className="brand-logo loading-logo"
@@ -2064,88 +2154,120 @@ export default function FieldflowApp({
   if (!currentUser) {
     return (
       <main className="login-page">
-        <section className="login-card">
-          <div className="brand login-brand">
-            <Image
-              className="brand-logo login-logo"
-              src="/df-desk-logo.svg"
-              alt="Desk"
-              width={990}
-              height={240}
-              loading="eager"
-            />
-          </div>
-          <span className="modal-kicker">DF Solutions workspace</span>
-          <h1>
-            {isSetupMode ? "Create your account" : "Sign in to Desk"}
-          </h1>
-          <p>
-            {isSetupMode
-              ? "Create the first Admin or Manager account for this workspace."
-              : "Use your personal Admin, Manager, or employee account."}
-          </p>
-          <label className="input-label">
-            Full name
-            <input
-              className="form-input"
-              value={loginName}
-              onChange={(event) => {
-                setLoginName(event.target.value);
-                setLoginError("");
-              }}
-              placeholder="Enter your name"
-              autoFocus
-            />
-          </label>
-          <label className="input-label">
-            Password
-            <input
-              className="form-input"
-              type="password"
-              value={loginPassword}
-              onChange={(event) => {
-                setLoginPassword(event.target.value);
-                setLoginError("");
-              }}
-              placeholder="Enter your password"
-            />
-          </label>
-          {loginError && <p className="login-error">{loginError}</p>}
-          <button
-            className="button button-primary login-submit"
-            onClick={isSetupMode ? createFirstAdmin : login}
+        <section className="login-form-panel">
+          <form
+            className="login-card"
+            onSubmit={(event) => {
+              event.preventDefault();
+              void (isSetupMode ? createFirstAdmin() : login());
+            }}
           >
-            {isSetupMode ? "Create Admin account" : "Sign in"}
-          </button>
-          {isSetupMode ? (
-            <button
-              className="reset-workspace"
-              onClick={() => {
-                setIsSetupMode(false);
-                setLoginError("");
-              }}
-            >
-              Back to login
-            </button>
-          ) : (
-            <>
-              <small className="login-hint">
-                Admins and Managers can create accounts after signing in.
-              </small>
-              {setupRequired && (
-                <button
-                  className="reset-workspace"
-                  onClick={() => {
-                    setIsSetupMode(true);
+            <div className="brand login-brand">
+              <Image
+                className="brand-logo login-logo"
+                src="/df-desk-logo.svg"
+                alt="Desk"
+                width={990}
+                height={240}
+                priority
+              />
+            </div>
+            <div className="login-heading">
+              <h1>{isSetupMode ? "Create your workspace" : "Welcome back"}</h1>
+              <p>
+                {isSetupMode
+                  ? "Create the first administrator account for Desk."
+                  : "Enter your details to sign in to Desk."}
+              </p>
+            </div>
+            <label className="input-label">
+              {isSetupMode ? "Administrator name" : "Login name"}
+              <span className="login-input-shell">
+                <UserRound size={18} aria-hidden="true" />
+                <input
+                  className="form-input"
+                  value={loginName}
+                  onChange={(event) => {
+                    setLoginName(event.target.value);
                     setLoginError("");
                   }}
+                  placeholder="Enter your full name"
+                  autoComplete="username"
+                  autoFocus
+                />
+              </span>
+            </label>
+            <label className="input-label">
+              Password
+              <span className="login-input-shell">
+                <LockKeyhole size={18} aria-hidden="true" />
+                <input
+                  className="form-input"
+                  type={showLoginPassword ? "text" : "password"}
+                  value={loginPassword}
+                  onChange={(event) => {
+                    setLoginPassword(event.target.value);
+                    setLoginError("");
+                  }}
+                  placeholder="Enter your password"
+                  autoComplete={isSetupMode ? "new-password" : "current-password"}
+                />
+                <button
+                  className="login-password-toggle"
+                  type="button"
+                  onClick={() => setShowLoginPassword((visible) => !visible)}
+                  aria-label={showLoginPassword ? "Hide password" : "Show password"}
                 >
-                  Create the first account
+                  {showLoginPassword ? <EyeOff size={18} /> : <Eye size={18} />}
                 </button>
-              )}
-            </>
-          )}
+              </span>
+            </label>
+            {loginError && <p className="login-error">{loginError}</p>}
+            <button className="button button-primary login-submit" type="submit">
+              {isSetupMode ? "Create Admin account" : "Sign in"}
+            </button>
+            {isSetupMode ? (
+              <button
+                className="reset-workspace"
+                type="button"
+                onClick={() => {
+                  setIsSetupMode(false);
+                  setLoginError("");
+                }}
+              >
+                Back to sign in
+              </button>
+            ) : (
+              <>
+                <small className="login-hint">
+                  Use the account provided by your Admin or Manager.
+                </small>
+                {setupRequired && (
+                  <button
+                    className="reset-workspace"
+                    type="button"
+                    onClick={() => {
+                      setIsSetupMode(true);
+                      setLoginError("");
+                    }}
+                  >
+                    Create the first account
+                  </button>
+                )}
+              </>
+            )}
+          </form>
         </section>
+        <aside className="login-visual" aria-label="Desk operations workspace">
+          <div className="login-visual-copy">
+            <span>DF Solutions · Desk</span>
+            <h2>Run your operations with confidence.</h2>
+            <p>
+              Keep your people, tasks, orders, attendance, and collections in
+              one clear workspace.
+            </p>
+          </div>
+        </aside>
       </main>
     );
   }
@@ -2852,25 +2974,34 @@ export default function FieldflowApp({
                 {visibleOrders.length ? (
                   visibleOrders.map((order) => (
                     <div className="orders-crud-row" key={order.id}>
-                      <strong>{order.id}</strong>
+                      <strong className="order-id-source">
+                        {order.id}
+                        {order.source === "Frames 41" && <small>Frames 41</small>}
+                      </strong>
                       <span>{order.customer}</span>
                       <span>{order.customerMobile || "—"}</span>
                       <span>{order.item}</span>
                       <strong>{order.value}</strong>
                       <span className="advance-order-value">
-                        <strong>{formatRupees(order.advanceAmount ?? 0)}</strong>
+                        <strong>
+                          {order.paidPaise !== undefined
+                            ? formatPaise(order.paidPaise)
+                            : formatRupees(order.advanceAmount ?? 0)}
+                        </strong>
                         <small>
-                          {order.advancePaymentMethod ?? "Not marked"}
+                          {order.paymentMethod ?? order.advancePaymentMethod ?? "Not marked"}
                         </small>
                       </span>
                       <strong>
-                        {formatRupees(
-                          Math.max(
-                            0,
-                            parseRupeesInput(order.value) -
-                              (order.advanceAmount ?? 0),
-                          ),
-                        )}
+                        {order.balanceDuePaise !== undefined
+                          ? formatPaise(order.balanceDuePaise)
+                          : formatRupees(
+                              Math.max(
+                                0,
+                                parseRupeesInput(order.value) -
+                                  (order.advanceAmount ?? 0),
+                              ),
+                            )}
                       </strong>
                       <span>
                         {order.deadline
@@ -2884,17 +3015,19 @@ export default function FieldflowApp({
                         <button
                           className="icon-button"
                           onClick={() => openOrderForm(order)}
-                          aria-label={`Edit ${order.id}`}
+                          aria-label={`${order.source === "Frames 41" ? "View" : "Edit"} ${order.id}`}
                         >
-                          <Pencil size={14} />
+                          {order.source === "Frames 41" ? <Eye size={14} /> : <Pencil size={14} />}
                         </button>
-                        <button
-                          className="icon-button danger-button"
-                          onClick={() => deleteOrder(order)}
-                          aria-label={`Delete ${order.id}`}
-                        >
-                          <Trash2 size={14} />
-                        </button>
+                        {order.source !== "Frames 41" && (
+                          <button
+                            className="icon-button danger-button"
+                            onClick={() => deleteOrder(order)}
+                            aria-label={`Delete ${order.id}`}
+                          >
+                            <Trash2 size={14} />
+                          </button>
+                        )}
                       </span>
                     </div>
                   ))
@@ -4444,7 +4577,7 @@ export default function FieldflowApp({
           onClick={() => setShowOrderForm(false)}
         >
           <div
-            className="payment-modal"
+            className={`payment-modal ${editingOrder?.source === "Frames 41" ? "commerce-order-modal" : ""}`}
             role="dialog"
             aria-modal="true"
             aria-labelledby="order-form-title"
@@ -4454,7 +4587,11 @@ export default function FieldflowApp({
               <div>
                 <span className="modal-kicker">Order management</span>
                 <h2 id="order-form-title">
-                  {editingOrder ? "Edit order" : "Create order"}
+                  {editingOrder?.source === "Frames 41"
+                    ? "Review website order"
+                    : editingOrder
+                      ? "Edit order"
+                      : "Create order"}
                 </h2>
                 <p>Enter the customer and order details.</p>
               </div>
@@ -4466,10 +4603,126 @@ export default function FieldflowApp({
                 <X size={18} />
               </button>
             </div>
+            {editingOrder?.source === "Frames 41" && (
+              <section className="commerce-order-details">
+                <div className="commerce-order-banner">
+                  <span>Frames 41 order</span>
+                  <strong>{editingOrder.externalOrderNumber}</strong>
+                  <small>
+                    Commerce details are read-only. Assignment, deadline, and Desk status remain editable.
+                  </small>
+                </div>
+                <div className="commerce-detail-grid">
+                  <div>
+                    <small>Email</small>
+                    <strong>{editingOrder.customerEmail || "—"}</strong>
+                  </div>
+                  <div>
+                    <small>Payment</small>
+                    <strong>{editingOrder.paymentMethod || "Razorpay"}</strong>
+                    <span>{editingOrder.paymentReference}</span>
+                  </div>
+                  <div>
+                    <small>Paid</small>
+                    <strong>{formatPaise(editingOrder.paidPaise)}</strong>
+                  </div>
+                  <div>
+                    <small>Balance due</small>
+                    <strong>{formatPaise(editingOrder.balanceDuePaise)}</strong>
+                  </div>
+                  <div>
+                    <small>Subtotal</small>
+                    <strong>{formatPaise(editingOrder.subtotalPaise)}</strong>
+                  </div>
+                  <div>
+                    <small>Discount</small>
+                    <strong>{formatPaise(editingOrder.discountPaise)}</strong>
+                  </div>
+                  <div>
+                    <small>Shipping</small>
+                    <strong>{formatPaise(editingOrder.shippingPaise)}</strong>
+                  </div>
+                  <div>
+                    <small>Order total</small>
+                    <strong>{formatPaise(editingOrder.totalPaise)}</strong>
+                  </div>
+                  <div>
+                    <small>Promised delivery</small>
+                    <strong>
+                      {editingOrder.promisedDeliveryAt
+                        ? formatAttendanceDate(editingOrder.promisedDeliveryAt.slice(0, 10))
+                        : "—"}
+                    </strong>
+                  </div>
+                  <div>
+                    <small>Payment type</small>
+                    <strong>{editingOrder.partialPayment ? "50% advance" : "Paid in full"}</strong>
+                  </div>
+                </div>
+                {editingOrder.shippingAddress && (
+                  <div className="commerce-address">
+                    <small>Delivery address</small>
+                    <strong>
+                      {editingOrder.shippingAddress.line1}
+                      {editingOrder.shippingAddress.line2
+                        ? `, ${editingOrder.shippingAddress.line2}`
+                        : ""}
+                    </strong>
+                    <span>
+                      {editingOrder.shippingAddress.city}, {editingOrder.shippingAddress.state} – {editingOrder.shippingAddress.pincode}
+                    </span>
+                  </div>
+                )}
+                <div className="commerce-line-items">
+                  <small>Items and customization</small>
+                  {editingOrder.lineItems?.map((lineItem) => (
+                    <article key={lineItem.id}>
+                      {lineItem.imageUrl && (
+                        // eslint-disable-next-line @next/next/no-img-element
+                        <img src={lineItem.imageUrl} alt="" />
+                      )}
+                      <div>
+                        <strong>{lineItem.name}</strong>
+                        <span>{lineItem.sku} · Qty {lineItem.quantity}</span>
+                        {lineItem.variant && <span>Variant: {lineItem.variant}</span>}
+                        {lineItem.customization && Object.keys(lineItem.customization).length > 0 && (
+                          <>
+                            <div className="commerce-customization-assets">
+                              {customizationImageUrls(lineItem.customization).map((url) => (
+                                // eslint-disable-next-line @next/next/no-img-element
+                                <img key={url} src={url} alt={`${lineItem.name} customization`} />
+                              ))}
+                            </div>
+                            <pre>{JSON.stringify(lineItem.customization, null, 2)}</pre>
+                          </>
+                        )}
+                      </div>
+                      <b>{formatPaise(lineItem.totalPricePaise)}</b>
+                    </article>
+                  ))}
+                </div>
+                <div className={`integration-sync integration-sync-${integrationSync?.status?.toLowerCase() ?? "idle"}`}>
+                  <span>Frames status sync</span>
+                  <strong>
+                    {integrationSyncLoading
+                      ? "Checking…"
+                      : integrationSync?.status ?? "No status update queued"}
+                  </strong>
+                  {integrationSync?.lastError && <small>{integrationSync.lastError}</small>}
+                  {integrationSync?.status === "FAILED" && (
+                    <button className="button" onClick={retryFramesSync} disabled={integrationSyncLoading}>
+                      Retry sync
+                    </button>
+                  )}
+                  {integrationSyncError && <small>{integrationSyncError}</small>}
+                </div>
+              </section>
+            )}
             <label className="input-label">
               Customer
               <input
                 className="form-input"
+                disabled={editingOrder?.source === "Frames 41"}
                 value={orderCustomer}
                 onChange={(event) => {
                   setOrderCustomer(event.target.value);
@@ -4483,6 +4736,7 @@ export default function FieldflowApp({
               <input
                 className="form-input"
                 type="tel"
+                disabled={editingOrder?.source === "Frames 41"}
                 value={orderCustomerMobile}
                 onChange={(event) => {
                   setOrderCustomerMobile(event.target.value);
@@ -4496,6 +4750,7 @@ export default function FieldflowApp({
               Item
               <input
                 className="form-input"
+                disabled={editingOrder?.source === "Frames 41"}
                 value={orderItem}
                 onChange={(event) => {
                   setOrderItem(event.target.value);
@@ -4528,6 +4783,7 @@ export default function FieldflowApp({
               Order value
               <input
                 className="form-input"
+                disabled={editingOrder?.source === "Frames 41"}
                 value={orderValue}
                 onChange={(event) => {
                   setOrderValue(event.target.value);
@@ -4541,6 +4797,7 @@ export default function FieldflowApp({
               Advance payment
               <input
                 className="form-input"
+                disabled={editingOrder?.source === "Frames 41"}
                 value={orderAdvanceAmount}
                 onChange={(event) => {
                   setOrderAdvanceAmount(event.target.value);
@@ -4558,6 +4815,7 @@ export default function FieldflowApp({
               {(["UPI", "Cash"] as const).map((method) => (
                 <button
                   type="button"
+                  disabled={editingOrder?.source === "Frames 41"}
                   key={method}
                   className={orderAdvanceMethod === method ? "selected" : ""}
                   onClick={() => setOrderAdvanceMethod(method)}

@@ -79,12 +79,34 @@ export type Task = {
 export type Order = {
   id: string;
   createdAt?: number;
+  source?: "Desk" | "Frames 41";
+  externalOrderId?: string;
+  externalOrderNumber?: string;
+  importPayloadHash?: string;
   customer: string;
   customerMobile?: string;
+  customerEmail?: string;
   item: string;
   value: string;
   advanceAmount?: number;
-  advancePaymentMethod?: "Cash" | "UPI";
+  advancePaymentMethod?: "Cash" | "UPI" | "Razorpay";
+  shippingAddress?: CommerceAddress;
+  lineItems?: CommerceLineItem[];
+  subtotalPaise?: number;
+  discountPaise?: number;
+  shippingPaise?: number;
+  totalPaise?: number;
+  paidPaise?: number;
+  balanceDuePaise?: number;
+  currency?: "INR";
+  paymentProvider?: "Razorpay";
+  paymentReference?: string;
+  paymentMethod?: string;
+  partialPayment?: boolean;
+  placedAt?: string;
+  paidAt?: string;
+  promisedDeliveryAt?: string;
+  commerceStatus?: string;
   deadline?: string;
   assignedEmployeeId?: string;
   assignedEmployeeName?: string;
@@ -92,12 +114,12 @@ export type Order = {
   color: string;
 };
 
-export type PaymentMethod = "Cash" | "UPI" | "Split";
+export type PaymentMethod = "Cash" | "UPI" | "Split" | "Razorpay";
 
 export type PaymentRecord = {
   id: string;
   orderId?: string;
-  source?: "Manual" | "Advance";
+  source?: "Manual" | "Advance" | "Commerce";
   customer: string;
   cashAmount: number;
   upiAmount: number;
@@ -105,6 +127,39 @@ export type PaymentRecord = {
   method: PaymentMethod;
   upiReference: string;
   createdAt: number;
+};
+
+export type CommerceAddress = {
+  line1: string;
+  line2?: string;
+  city: string;
+  state: string;
+  pincode: string;
+};
+
+export type CommerceLineItem = {
+  id: string;
+  productId: string;
+  sku: string;
+  name: string;
+  imageUrl?: string;
+  quantity: number;
+  unitPricePaise: number;
+  totalPricePaise: number;
+  variant?: string;
+  customization?: Record<string, unknown>;
+};
+
+export type IntegrationDeliveryStatus = "PENDING" | "RUNNING" | "DELIVERED" | "FAILED";
+
+export type IntegrationSyncState = {
+  eventId: string;
+  status: IntegrationDeliveryStatus;
+  attempts: number;
+  maxAttempts: number;
+  lastError: string | null;
+  deliveredAt: string | null;
+  updatedAt: string;
 };
 
 export type Workspace = {
