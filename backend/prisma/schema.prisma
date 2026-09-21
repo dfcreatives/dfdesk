@@ -1,0 +1,475 @@
+generator client {
+  provider        = "prisma-client-js"
+  previewFeatures = ["multiSchema"]
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+  schemas  = ["desk"]
+}
+
+enum UserRole {
+  ADMIN
+  MANAGER
+  EMPLOYEE
+
+  @@schema("desk")
+}
+
+enum TaskStatus {
+  NOT_STARTED
+  IN_PROGRESS
+  BLOCKED
+  COMPLETED
+
+  @@schema("desk")
+}
+
+enum OrderSource {
+  DESK
+  FRAMES_41
+
+  @@schema("desk")
+}
+
+enum SyncStatus {
+  NONE
+  PENDING
+  SYNCED
+  FAILED
+
+  @@schema("desk")
+}
+
+enum PaymentSource {
+  MANUAL
+  ADVANCE
+  COMMERCE
+
+  @@schema("desk")
+}
+
+enum AttendanceStatus {
+  PRESENT
+  ABSENT
+
+  @@schema("desk")
+}
+
+enum OrderFieldType {
+  TEXT
+  TEXTAREA
+  NUMBER
+  CURRENCY
+  DATE
+  PHONE
+  EMAIL
+  SELECT
+  MULTI_SELECT
+  CHECKBOX
+
+  @@schema("desk")
+}
+
+model Workspace {
+  id          String                  @id @default(uuid()) @db.Uuid
+  name        String                  @db.VarChar(120)
+  slug        String                  @unique @db.VarChar(80)
+  createdAt   DateTime                @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt   DateTime                @updatedAt @map("updated_at") @db.Timestamptz(3)
+  users       User[]
+  tasks       Task[]
+  customers   Customer[]
+  orders      Order[]
+  payments    Payment[]
+  connections IntegrationConnection[]
+  auditLogs   AuditLog[]
+  migrations  MigrationRun[]
+  orderFieldDefinitions OrderFieldDefinition[]
+
+  @@map("workspaces")
+  @@schema("desk")
+}
+
+model User {
+  id               String               @id @default(uuid()) @db.Uuid
+  workspaceId      String               @map("workspace_id") @db.Uuid
+  loginName        String               @map("login_name") @db.VarChar(80)
+  normalizedName   String               @map("normalized_name") @db.VarChar(80)
+  passwordHash     String               @map("password_hash")
+  role             UserRole
+  jobTitle         String?              @map("job_title") @db.VarChar(120)
+  initials         String?              @db.VarChar(4)
+  color            String?              @db.VarChar(32)
+  active           Boolean              @default(true)
+  archivedAt       DateTime?            @map("archived_at") @db.Timestamptz(3)
+  version          Int                  @default(1)
+  createdAt        DateTime             @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt        DateTime             @updatedAt @map("updated_at") @db.Timestamptz(3)
+  workspace        Workspace            @relation(fields: [workspaceId], references: [id], onDelete: Restrict)
+  sessions         Session[]
+  attendance       AttendanceSession[]
+  manualAttendance ManualAttendance[]   @relation("AttendanceUser")
+  markedAttendance ManualAttendance[]   @relation("AttendanceMarker")
+  ledTasks         Task[]               @relation("TaskLead")
+  taskAssignments  TaskAssignee[]
+  assignedOrders   Order[]              @relation("OrderAssignee")
+  statusChanges    OrderStatusHistory[]
+  auditLogs        AuditLog[]
+
+  @@unique([workspaceId, normalizedName])
+  @@index([workspaceId, role, archivedAt])
+  @@map("users")
+  @@schema("desk")
+}
+
+model Session {
+  id        String    @id @default(uuid()) @db.Uuid
+  tokenHash String    @unique @map("token_hash") @db.Char(64)
+  userId    String    @map("user_id") @db.Uuid
+  expiresAt DateTime  @map("expires_at") @db.Timestamptz(3)
+  revokedAt DateTime? @map("revoked_at") @db.Timestamptz(3)
+  ipAddress String?   @map("ip_address") @db.VarChar(64)
+  userAgent String?   @map("user_agent") @db.VarChar(300)
+  createdAt DateTime  @default(now()) @map("created_at") @db.Timestamptz(3)
+  user      User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, expiresAt])
+  @@map("sessions")
+  @@schema("desk")
+}
+
+model AttendanceSession {
+  id              String    @id @default(uuid()) @db.Uuid
+  userId          String    @map("user_id") @db.Uuid
+  workDate        DateTime  @map("work_date") @db.Date
+  clockIn         DateTime  @map("clock_in") @db.Timestamptz(3)
+  clockOut        DateTime? @map("clock_out") @db.Timestamptz(3)
+  durationSeconds Int       @default(0) @map("duration_seconds")
+  createdAt       DateTime  @default(now()) @map("created_at") @db.Timestamptz(3)
+  user            User      @relation(fields: [userId], references: [id], onDelete: Restrict)
+
+  @@index([userId, workDate])
+  @@map("attendance_sessions")
+  @@schema("desk")
+}
+
+model ManualAttendance {
+  id         String           @id @default(uuid()) @db.Uuid
+  userId     String           @map("user_id") @db.Uuid
+  workDate   DateTime         @map("work_date") @db.Date
+  status     AttendanceStatus
+  markedById String           @map("marked_by_id") @db.Uuid
+  createdAt  DateTime         @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt  DateTime         @updatedAt @map("updated_at") @db.Timestamptz(3)
+  user       User             @relation("AttendanceUser", fields: [userId], references: [id], onDelete: Restrict)
+  markedBy   User             @relation("AttendanceMarker", fields: [markedById], references: [id], onDelete: Restrict)
+
+  @@unique([userId, workDate])
+  @@map("manual_attendance")
+  @@schema("desk")
+}
+
+model Task {
+  id                 String         @id @default(uuid()) @db.Uuid
+  workspaceId        String         @map("workspace_id") @db.Uuid
+  orderId            String?        @map("order_id") @db.Uuid
+  leadId             String?        @map("lead_id") @db.Uuid
+  title              String         @db.VarChar(300)
+  leadResponsibility String?        @map("lead_responsibility") @db.VarChar(300)
+  status             TaskStatus     @default(NOT_STARTED)
+  progress           Int            @default(0)
+  tone               String?        @db.VarChar(40)
+  deadline           DateTime?      @db.Date
+  completedAt        DateTime?      @map("completed_at") @db.Timestamptz(3)
+  archivedAt         DateTime?      @map("archived_at") @db.Timestamptz(3)
+  version            Int            @default(1)
+  createdAt          DateTime       @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt          DateTime       @updatedAt @map("updated_at") @db.Timestamptz(3)
+  workspace          Workspace      @relation(fields: [workspaceId], references: [id], onDelete: Restrict)
+  order              Order?         @relation(fields: [orderId], references: [id], onDelete: SetNull)
+  lead               User?          @relation("TaskLead", fields: [leadId], references: [id], onDelete: SetNull)
+  assignees          TaskAssignee[]
+
+  @@index([workspaceId, status, archivedAt])
+  @@index([orderId])
+  @@map("tasks")
+  @@schema("desk")
+}
+
+model TaskAssignee {
+  taskId         String  @map("task_id") @db.Uuid
+  userId         String  @map("user_id") @db.Uuid
+  isLead         Boolean @default(false) @map("is_lead")
+  responsibility String  @db.VarChar(300)
+  task           Task    @relation(fields: [taskId], references: [id], onDelete: Cascade)
+  user           User    @relation(fields: [userId], references: [id], onDelete: Restrict)
+
+  @@id([taskId, userId])
+  @@index([userId])
+  @@map("task_assignees")
+  @@schema("desk")
+}
+
+model Customer {
+  id          String    @id @default(uuid()) @db.Uuid
+  workspaceId String    @map("workspace_id") @db.Uuid
+  name        String    @db.VarChar(160)
+  email       String?   @db.VarChar(254)
+  phone       String?   @db.VarChar(32)
+  createdAt   DateTime  @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt   DateTime  @updatedAt @map("updated_at") @db.Timestamptz(3)
+  workspace   Workspace @relation(fields: [workspaceId], references: [id], onDelete: Restrict)
+  orders      Order[]
+
+  @@index([workspaceId, name])
+  @@map("customers")
+  @@schema("desk")
+}
+
+model Order {
+  id                  String               @id @default(uuid()) @db.Uuid
+  workspaceId         String               @map("workspace_id") @db.Uuid
+  customerId          String               @map("customer_id") @db.Uuid
+  assignedUserId      String?              @map("assigned_user_id") @db.Uuid
+  displayId           String               @map("display_id") @db.VarChar(80)
+  source              OrderSource          @default(DESK)
+  externalOrderId     String?              @map("external_order_id") @db.VarChar(160)
+  externalOrderNumber String?              @map("external_order_number") @db.VarChar(160)
+  importPayloadHash   String?              @map("import_payload_hash") @db.Char(64)
+  itemSummary         String               @map("item_summary") @db.VarChar(500)
+  status              String               @db.VarChar(80)
+  color               String               @db.VarChar(40)
+  commerceStatus      String?              @map("commerce_status") @db.VarChar(80)
+  promisedDeliveryAt  DateTime?            @map("promised_delivery_at") @db.Timestamptz(3)
+  deadline            DateTime?            @db.Date
+  placedAt            DateTime?            @map("placed_at") @db.Timestamptz(3)
+  paidAt              DateTime?            @map("paid_at") @db.Timestamptz(3)
+  subtotalPaise       BigInt               @default(0) @map("subtotal_paise")
+  discountPaise       BigInt               @default(0) @map("discount_paise")
+  shippingPaise       BigInt               @default(0) @map("shipping_paise")
+  totalPaise          BigInt               @default(0) @map("total_paise")
+  paidPaise           BigInt               @default(0) @map("paid_paise")
+  balanceDuePaise     BigInt               @default(0) @map("balance_due_paise")
+  currency            String               @default("INR") @db.Char(3)
+  syncStatus          SyncStatus           @default(NONE) @map("sync_status")
+  syncEventId         String?              @map("sync_event_id") @db.Uuid
+  syncVersion         Int?                 @map("sync_version")
+  syncAttemptedAt     DateTime?            @map("sync_attempted_at") @db.Timestamptz(3)
+  syncError           String?              @map("sync_error") @db.VarChar(500)
+  syncPayload         Json?                @map("sync_payload")
+  version             Int                  @default(1)
+  archivedAt          DateTime?            @map("archived_at") @db.Timestamptz(3)
+  createdAt           DateTime             @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt           DateTime             @updatedAt @map("updated_at") @db.Timestamptz(3)
+  workspace           Workspace            @relation(fields: [workspaceId], references: [id], onDelete: Restrict)
+  customer            Customer             @relation(fields: [customerId], references: [id], onDelete: Restrict)
+  assignedUser        User?                @relation("OrderAssignee", fields: [assignedUserId], references: [id], onDelete: SetNull)
+  address             OrderAddress?
+  items               OrderItem[]
+  payments            Payment[]
+  statusHistory       OrderStatusHistory[]
+  tasks               Task[]
+  customFieldValues   OrderCustomFieldValue[]
+
+  @@unique([workspaceId, displayId])
+  @@unique([workspaceId, externalOrderId])
+  @@index([workspaceId, status, archivedAt])
+  @@map("orders")
+  @@schema("desk")
+}
+
+model OrderFieldDefinition {
+  id          String         @id @default(uuid()) @db.Uuid
+  workspaceId String         @map("workspace_id") @db.Uuid
+  key         String         @db.VarChar(80)
+  label       String         @db.VarChar(120)
+  type        OrderFieldType
+  required    Boolean        @default(false)
+  placeholder String?        @db.VarChar(160)
+  helpText    String?        @map("help_text") @db.VarChar(300)
+  options     Json?
+  position    Int            @default(0)
+  showInList  Boolean        @default(false) @map("show_in_list")
+  archivedAt  DateTime?      @map("archived_at") @db.Timestamptz(3)
+  createdAt   DateTime       @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt   DateTime       @updatedAt @map("updated_at") @db.Timestamptz(3)
+  workspace   Workspace      @relation(fields: [workspaceId], references: [id], onDelete: Restrict)
+  values      OrderCustomFieldValue[]
+
+  @@unique([workspaceId, key])
+  @@index([workspaceId, archivedAt, position])
+  @@map("order_field_definitions")
+  @@schema("desk")
+}
+
+model OrderCustomFieldValue {
+  id        String               @id @default(uuid()) @db.Uuid
+  orderId   String               @map("order_id") @db.Uuid
+  fieldId   String               @map("field_id") @db.Uuid
+  value     Json
+  createdAt DateTime             @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt DateTime             @updatedAt @map("updated_at") @db.Timestamptz(3)
+  order     Order                @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  field     OrderFieldDefinition @relation(fields: [fieldId], references: [id], onDelete: Restrict)
+
+  @@unique([orderId, fieldId])
+  @@index([fieldId])
+  @@map("order_custom_field_values")
+  @@schema("desk")
+}
+
+model OrderAddress {
+  id      String  @id @default(uuid()) @db.Uuid
+  orderId String  @unique @map("order_id") @db.Uuid
+  line1   String  @db.VarChar(200)
+  line2   String? @db.VarChar(200)
+  city    String  @db.VarChar(100)
+  state   String  @db.VarChar(100)
+  pincode String  @db.VarChar(16)
+  order   Order   @relation(fields: [orderId], references: [id], onDelete: Cascade)
+
+  @@map("order_addresses")
+  @@schema("desk")
+}
+
+model OrderItem {
+  id              String           @id @default(uuid()) @db.Uuid
+  orderId         String           @map("order_id") @db.Uuid
+  externalItemId  String?          @map("external_item_id") @db.VarChar(160)
+  productId       String?          @map("product_id") @db.VarChar(160)
+  sku             String?          @db.VarChar(160)
+  name            String           @db.VarChar(300)
+  variant         String?          @db.VarChar(160)
+  quantity        Int
+  unitPricePaise  BigInt           @map("unit_price_paise")
+  totalPricePaise BigInt           @map("total_price_paise")
+  customization   Json?
+  order           Order            @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  assets          OrderItemAsset[]
+
+  @@index([orderId])
+  @@map("order_items")
+  @@schema("desk")
+}
+
+model OrderItemAsset {
+  id     String    @id @default(uuid()) @db.Uuid
+  itemId String    @map("item_id") @db.Uuid
+  type   String    @db.VarChar(40)
+  url    String    @db.Text
+  item   OrderItem @relation(fields: [itemId], references: [id], onDelete: Cascade)
+
+  @@index([itemId])
+  @@map("order_item_assets")
+  @@schema("desk")
+}
+
+model Payment {
+  id                String        @id @default(uuid()) @db.Uuid
+  workspaceId       String        @map("workspace_id") @db.Uuid
+  orderId           String?       @map("order_id") @db.Uuid
+  displayId         String        @map("display_id") @db.VarChar(160)
+  customerName      String        @map("customer_name") @db.VarChar(160)
+  source            PaymentSource
+  method            String        @db.VarChar(40)
+  providerReference String?       @map("provider_reference") @db.VarChar(200)
+  cashPaise         BigInt        @default(0) @map("cash_paise")
+  upiPaise          BigInt        @default(0) @map("upi_paise")
+  totalPaise        BigInt        @map("total_paise")
+  receivedAt        DateTime      @map("received_at") @db.Timestamptz(3)
+  createdAt         DateTime      @default(now()) @map("created_at") @db.Timestamptz(3)
+  workspace         Workspace     @relation(fields: [workspaceId], references: [id], onDelete: Restrict)
+  order             Order?        @relation(fields: [orderId], references: [id], onDelete: SetNull)
+
+  @@unique([workspaceId, displayId])
+  @@index([workspaceId, receivedAt])
+  @@map("payments")
+  @@schema("desk")
+}
+
+model OrderStatusHistory {
+  id        String   @id @default(uuid()) @db.Uuid
+  orderId   String   @map("order_id") @db.Uuid
+  actorId   String?  @map("actor_id") @db.Uuid
+  oldStatus String?  @map("old_status") @db.VarChar(80)
+  newStatus String   @map("new_status") @db.VarChar(80)
+  source    String   @db.VarChar(40)
+  note      String?  @db.VarChar(500)
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(3)
+  order     Order    @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  actor     User?    @relation(fields: [actorId], references: [id], onDelete: SetNull)
+
+  @@index([orderId, createdAt])
+  @@map("order_status_history")
+  @@schema("desk")
+}
+
+model IntegrationConnection {
+  id              String    @id @default(uuid()) @db.Uuid
+  workspaceId     String    @map("workspace_id") @db.Uuid
+  clientKey       String    @map("client_key") @db.VarChar(80)
+  apiIdentity     String    @map("api_identity") @db.VarChar(80)
+  displayName     String    @map("display_name") @db.VarChar(120)
+  baseUrl         String?   @map("base_url") @db.Text
+  enabled         Boolean   @default(true)
+  lastHealthyAt   DateTime? @map("last_healthy_at") @db.Timestamptz(3)
+  lastHealthError String?   @map("last_health_error") @db.VarChar(500)
+  createdAt       DateTime  @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt       DateTime  @updatedAt @map("updated_at") @db.Timestamptz(3)
+  workspace       Workspace @relation(fields: [workspaceId], references: [id], onDelete: Restrict)
+
+  @@unique([workspaceId, clientKey])
+  @@map("integration_connections")
+  @@schema("desk")
+}
+
+model IntegrationInbox {
+  eventId     String    @id @map("event_id") @db.Uuid
+  clientId    String    @map("client_id") @db.VarChar(80)
+  eventType   String    @map("event_type") @db.VarChar(120)
+  aggregateId String    @map("aggregate_id") @db.VarChar(160)
+  payloadHash String    @map("payload_hash") @db.Char(64)
+  payload     Json
+  result      Json?
+  receivedAt  DateTime  @default(now()) @map("received_at") @db.Timestamptz(3)
+  processedAt DateTime? @map("processed_at") @db.Timestamptz(3)
+
+  @@index([clientId, aggregateId])
+  @@map("integration_inbox")
+  @@schema("desk")
+}
+
+model AuditLog {
+  id            String    @id @default(uuid()) @db.Uuid
+  workspaceId   String    @map("workspace_id") @db.Uuid
+  actorId       String?   @map("actor_id") @db.Uuid
+  action        String    @db.VarChar(120)
+  aggregateType String    @map("aggregate_type") @db.VarChar(80)
+  aggregateId   String    @map("aggregate_id") @db.VarChar(160)
+  requestId     String    @map("request_id") @db.Uuid
+  metadata      Json?
+  createdAt     DateTime  @default(now()) @map("created_at") @db.Timestamptz(3)
+  workspace     Workspace @relation(fields: [workspaceId], references: [id], onDelete: Restrict)
+  actor         User?     @relation(fields: [actorId], references: [id], onDelete: SetNull)
+
+  @@index([workspaceId, createdAt])
+  @@map("audit_logs")
+  @@schema("desk")
+}
+
+model MigrationRun {
+  id             String    @id @default(uuid()) @db.Uuid
+  workspaceId    String    @map("workspace_id") @db.Uuid
+  sourceRevision BigInt    @map("source_revision")
+  sourceChecksum String    @map("source_checksum") @db.Char(64)
+  counts         Json
+  result         String    @db.VarChar(40)
+  createdAt      DateTime  @default(now()) @map("created_at") @db.Timestamptz(3)
+  workspace      Workspace @relation(fields: [workspaceId], references: [id], onDelete: Restrict)
+
+  @@unique([sourceRevision, sourceChecksum])
+  @@map("migration_runs")
+  @@schema("desk")
+}

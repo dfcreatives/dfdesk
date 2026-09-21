@@ -1,0 +1,44 @@
+{
+  "name": "@desk/backend",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "node --env-file-if-exists=../.env.local --watch --import tsx src/server.ts",
+    "build": "prisma generate && tsc -p tsconfig.build.json",
+    "start": "node --env-file-if-exists=../.env.local dist/src/server.js",
+    "typecheck": "tsc --noEmit --pretty false",
+    "test": "vitest run --passWithNoTests",
+    "db:generate": "npm run prisma:generate",
+    "db:migrate": "npm run prisma:migrate",
+    "prisma:generate": "node --env-file-if-exists=../.env.local node_modules/prisma/build/index.js generate",
+    "prisma:migrate": "node --env-file-if-exists=../.env.local node_modules/prisma/build/index.js migrate deploy",
+    "migrate:legacy": "node --env-file-if-exists=../.env.local --import tsx scripts/migrate-legacy-workspace.ts",
+    "validate:migration": "node --env-file-if-exists=../.env.local --import tsx scripts/validate-migration.ts",
+    "export:legacy": "node --env-file-if-exists=../.env.local --import tsx scripts/export-legacy-workspace.ts"
+  },
+  "dependencies": {
+    "@prisma/client": "6.12.0",
+    "cookie-parser": "^1.4.7",
+    "cors": "^2.8.5",
+    "express": "^5.1.0",
+    "express-rate-limit": "^8.1.0",
+    "helmet": "^8.1.0",
+    "pg": "^8.16.3",
+    "pino": "^9.11.0",
+    "pino-http": "^10.5.0",
+    "zod": "^4.1.0"
+  },
+  "devDependencies": {
+    "@types/cookie-parser": "^1.4.9",
+    "@types/cors": "^2.8.19",
+    "@types/express": "^5.0.3",
+    "@types/node": "^22.18.0",
+    "@types/pg": "^8.15.5",
+    "@types/supertest": "^6.0.3",
+    "prisma": "6.12.0",
+    "supertest": "^7.1.4",
+    "tsx": "^4.20.0",
+    "vitest": "^3.2.0"
+  }
+}

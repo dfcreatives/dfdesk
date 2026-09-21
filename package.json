@@ -1,33 +1,34 @@
 {
-  "name": "flow41-scaffold",
-  "version": "0.1.0",
+  "name": "desk",
+  "version": "1.0.0",
   "private": true,
+  "workspaces": [
+    "frontend",
+    "backend"
+  ],
   "scripts": {
-    "dev": "next dev",
-    "build": "next build",
-    "start": "next start",
-    "start:worker": "node scripts/integration-worker.mjs",
-    "test": "node --experimental-strip-types --test tests/*.test.mjs",
-    "lint": "eslint",
-    "db:migrate-json": "node scripts/migrate-json-to-postgres.mjs"
-  },
-  "dependencies": {
-    "lucide-react": "^1.34.0",
-    "next": "16.3.3",
-    "pg": "^8.23.0",
-    "react": "19.2.8",
-    "react-dom": "19.2.8"
+    "dev": "concurrently -n api,web -c blue,green \"npm run dev -w backend\" \"npm run dev -w frontend\"",
+    "build": "npm run build -w backend && npm run build -w frontend",
+    "start": "npm run start -w backend",
+    "lint": "eslint frontend/src backend/src backend/scripts",
+    "typecheck": "npm run typecheck -w backend && npm run typecheck -w frontend",
+    "test": "npm run test -w backend && npm run test -w frontend",
+    "format": "prettier --write .",
+    "db:generate": "npm run prisma:generate -w backend",
+    "db:migrate": "npm run prisma:migrate -w backend",
+    "db:migrate-legacy": "npm run migrate:legacy -w backend",
+    "db:validate-migration": "npm run validate:migration -w backend",
+    "db:export-legacy": "npm run export:legacy -w backend"
   },
   "devDependencies": {
-    "@next/env": "^16.3.3",
-    "@tailwindcss/postcss": "^4",
-    "@types/node": "^20",
-    "@types/pg": "^8.23.1",
-    "@types/react": "^19",
-    "@types/react-dom": "^19",
-    "eslint": "^9",
-    "eslint-config-next": "16.3.3",
-    "tailwindcss": "^4",
-    "typescript": "^5"
+    "@eslint/js": "^9.39.0",
+    "concurrently": "^9.2.1",
+    "eslint": "^9.39.0",
+    "prettier": "^3.6.2",
+    "typescript": "^5.9.3",
+    "typescript-eslint": "^8.46.0"
+  },
+  "engines": {
+    "node": ">=22.12.0"
   }
 }

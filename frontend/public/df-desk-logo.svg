@@ -1,0 +1,26 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg id="Layer_1" data-name="Layer 1" xmlns="http://www.w3.org/2000/svg" viewBox="20 125 990 240">
+  <defs>
+    <style>
+      .cls-1 { font-family: Poppins-Regular, Poppins, sans-serif; font-size: 87px; }
+      .cls-1, .cls-2, .cls-3 { isolation: isolate; }
+      .cls-1, .cls-3 { fill: #231f20; }
+      .cls-3 { font-family: Poppins-Bold, Poppins, sans-serif; font-size: 188.31px; font-weight: 700; }
+      .cls-4 { fill: none; }
+      .cls-4, .cls-5 { stroke: #000; stroke-miterlimit: 10; stroke-width: 8px; }
+    </style>
+  </defs>
+  <rect class="cls-4" x="341.5" y="144.85" width="162" height="54" rx="27" ry="27"/>
+  <rect class="cls-4" x="44.5" y="144.85" width="162" height="54" rx="27" ry="27"/>
+  <rect class="cls-4" x="341.5" y="288" width="162" height="54" rx="27" ry="27"/>
+  <rect class="cls-4" x="44.5" y="288" width="162" height="54" rx="27" ry="27"/>
+  <rect class="cls-5" x="40" y="216" width="468" height="54" rx="27" ry="27"/>
+  <path class="cls-4" d="M270.62,262.71c-1.22-49.73,30.49-90.75,70.88-91.71"/>
+  <path class="cls-4" d="M273.97,225c1.22,49.73-30.49,90.75-70.88,91.71"/>
+  <g class="cls-2">
+    <text class="cls-3" transform="translate(508 345.29) scale(.98 1)"><tspan x="0" y="0">DESK</tspan></text>
+  </g>
+  <g class="cls-2">
+    <text class="cls-1" transform="translate(512 202.24) scale(.98 1)"><tspan x="0" y="0">DF</tspan></text>
+  </g>
+</svg>
