@@ -70,6 +70,6 @@ There are no automatic retries. A failed or interrupted callback remains visible
 
 ## Railway
 
-Create separate frontend and backend services from this repository. The backend start command is `npm run start`; its health path is `/api/v1/health`. Run `npm run db:migrate` as the backend pre-deploy command. The frontend build command is `npm run build -w frontend`, with `frontend/dist` as its output.
+Create separate frontend and backend services from this repository. The backend start command is `npm run start`; set Railway's healthcheck path to `/health`. The versioned `/api/v1/health` alias remains available for API clients. Run `npm run db:migrate` as the backend pre-deploy command. The frontend build command is `npm run build -w frontend`, with `frontend/dist` as its output.
 
 Use Railway private networking for PostgreSQL and the Frames service. Never expose `DATABASE_URL` or `DF_INTEGRATION_SECRET` through a `VITE_*` variable.

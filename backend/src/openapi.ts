@@ -1,4 +1,5 @@
 const operations = {
+  "/health": { get: { operationId: "rootHealth", security: [] } },
   "/api/v1/health": { get: { operationId: "health", security: [] } },
   "/api/v1/ready": { get: { operationId: "ready", security: [] } },
   "/api/v1/auth/bootstrap": {

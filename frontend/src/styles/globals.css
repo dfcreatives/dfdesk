@@ -7,7 +7,7 @@ body {
   margin: 0;
   background: var(--paper);
   color: var(--ink);
-  font-family: var(--font-geist-sans), "Helvetica Neue", sans-serif;
+  font-family: var(--font-sans);
 }
 .loading-card {
   align-items: center;

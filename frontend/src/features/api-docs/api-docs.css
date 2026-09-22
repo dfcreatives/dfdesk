@@ -185,7 +185,7 @@
   max-width: 650px;
   margin: 17px 0 18px;
   color: #202329;
-  font-family: Georgia, "Times New Roman", serif;
+  font-family: var(--font-sans);
   font-size: clamp(38px, 5.2vw, 58px);
   font-weight: 500;
   line-height: 1.04;
@@ -252,7 +252,7 @@
 
 .api-docs-section h2 {
   margin: 8px 0 13px;
-  font-family: Georgia, "Times New Roman", serif;
+  font-family: var(--font-sans);
   font-size: 32px;
   font-weight: 500;
   letter-spacing: -0.025em;

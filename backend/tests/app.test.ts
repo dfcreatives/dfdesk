@@ -10,13 +10,19 @@ beforeAll(() => {
 });
 
 describe("HTTP boundary", () => {
-  it("returns an enveloped health response with hardened headers", async () => {
-    const { createApp } = await import("../src/app.js");
-    const response = await request(createApp()).get("/api/v1/health").expect(200);
-    expect(response.body).toMatchObject({ data: { status: "ok" }, meta: { requestId: expect.any(String) } });
-    expect(response.headers["x-content-type-options"]).toBe("nosniff");
-    expect(response.headers["x-powered-by"]).toBeUndefined();
-  });
+  it.each(["/health", "/api/v1/health"])(
+    "returns an enveloped health response with hardened headers at %s",
+    async (path) => {
+      const { createApp } = await import("../src/app.js");
+      const response = await request(createApp()).get(path).expect(200);
+      expect(response.body).toMatchObject({
+        data: { status: "ok" },
+        meta: { requestId: expect.any(String) },
+      });
+      expect(response.headers["x-content-type-options"]).toBe("nosniff");
+      expect(response.headers["x-powered-by"]).toBeUndefined();
+    },
+  );
 
   it("uses problem details for unknown endpoints", async () => {
     const { createApp } = await import("../src/app.js");

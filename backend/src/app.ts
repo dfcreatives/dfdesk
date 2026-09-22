@@ -62,7 +62,7 @@ export function createApp() {
   app.use(loadActor);
   app.use(csrfProtection);
 
-  app.get("/api/v1/health", (_request, response) =>
+  app.get(["/health", "/api/v1/health"], (_request, response) =>
     ok(response, { status: "ok" }),
   );
   app.get("/api/v1/ready", async (_request, response) => {
