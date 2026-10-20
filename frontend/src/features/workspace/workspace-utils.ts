@@ -9,6 +9,14 @@ type AttendanceDaySummary = {
   hasOpenSession: boolean;
 };
 
+export function getAttendanceRecordSeconds(
+  record: AttendanceRecord,
+  now: number,
+) {
+  const end = record.clockOut ?? now;
+  return Math.max(0, Math.floor((end - record.clockIn) / 1000));
+}
+
 export function normalizeTask(task: Task): Task {
   const status = task.status ?? (task.completed ? "Completed" : "Not started");
   return {
@@ -56,10 +64,7 @@ export function summarizeAttendanceRecords(
         existing.hasOpenSession ||= record.clockOut === null;
         if (record.clockOut !== null)
           existing.clockOut = Math.max(existing.clockOut ?? 0, record.clockOut);
-        existing.durationSeconds +=
-          record.clockOut !== null
-            ? record.durationSeconds
-            : Math.max(0, Math.floor((now - record.clockIn) / 1000));
+        existing.durationSeconds += getAttendanceRecordSeconds(record, now);
         days.set(record.date, existing);
         return days;
       }, new Map<string, AttendanceDaySummary>())

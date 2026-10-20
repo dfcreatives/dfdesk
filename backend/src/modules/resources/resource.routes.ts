@@ -5,8 +5,13 @@ import { Router } from "express";
 import { z } from "zod";
 import { prisma } from "../../lib/prisma.js";
 import { requireActor, requireRole } from "../../middleware/auth.js";
-import { conflict, notFound } from "../../shared/errors/app-error.js";
+import {
+  badRequest,
+  conflict,
+  notFound,
+} from "../../shared/errors/app-error.js";
 import { ok } from "../../shared/http/respond.js";
+import { hashPassword } from "../../shared/security/password.js";
 import {
   employeeSchema,
   orderSchema,
@@ -27,15 +32,22 @@ resourceRouter.use(requireActor);
 const userCreateSchema = z.discriminatedUnion("accountRole", [
   employeeSchema
     .omit({ id: true })
-    .extend({ accountRole: z.literal("Employee") }),
+    .extend({
+      accountRole: z.literal("Employee"),
+      password: z.string().min(8).max(256),
+    }),
   staffSchema
     .omit({ id: true })
-    .extend({ accountRole: z.enum(["Admin", "Manager"]) }),
+    .extend({
+      accountRole: z.enum(["Admin", "Manager"]),
+      password: z.string().min(8).max(256),
+    }),
 ]);
 const userPatchSchema = z
   .object({
     name: z.string().trim().min(1).max(80).optional(),
     password: z.string().min(8).max(256).optional(),
+    accountRole: z.enum(["Admin", "Manager"]).optional(),
     jobTitle: z.string().trim().min(1).max(120).optional(),
     active: z.boolean().optional(),
   })
@@ -65,6 +77,7 @@ const assignmentSchema = z
 const customOrderSubmissionSchema = z
   .object({
     externalId: z.string().trim().min(1).max(160).optional(),
+    formId: z.uuid().optional(),
     fields: z.record(
       z.string().trim().min(1).max(80),
       orderCustomFieldValueSchema,
@@ -81,22 +94,46 @@ resourceRouter.post(
   requireRole(UserRole.ADMIN, UserRole.MANAGER),
   async (request, response) => {
     const input = userCreateSchema.parse(request.body);
-    const workspace = await getWorkspace(request.actor!);
-    if (input.accountRole === "Employee")
-      workspace.employees.push({
-        ...input,
-        id: randomUUID(),
-        role: input.role,
-        task: input.task,
-        active: input.active,
+    const actor = request.actor!;
+    const normalizedName = input.name.toLocaleLowerCase();
+    const duplicate = await prisma.user.findFirst({
+      where: { workspaceId: actor.workspaceId, normalizedName },
+      select: { id: true },
+    });
+    if (duplicate) throw conflict("A user with this login name already exists.");
+
+    try {
+      await prisma.user.create({
+        data: {
+          id: randomUUID(),
+          workspaceId: actor.workspaceId,
+          loginName: input.name,
+          normalizedName,
+          passwordHash: await hashPassword(input.password),
+          role:
+            input.accountRole === "Employee"
+              ? UserRole.EMPLOYEE
+              : input.accountRole === "Admin"
+                ? UserRole.ADMIN
+                : UserRole.MANAGER,
+          jobTitle: input.accountRole === "Employee" ? input.role : null,
+          initials: input.accountRole === "Employee" ? input.initials : null,
+          color: input.accountRole === "Employee" ? input.color : null,
+          active: input.accountRole === "Employee" ? input.active : true,
+        },
       });
-    else
-      workspace.staff.push({
-        ...input,
-        id: randomUUID(),
-        role: input.accountRole,
-      });
-    return ok(response, await saveWorkspace(workspace, request.actor), 201);
+    } catch (error) {
+      if (
+        typeof error === "object" &&
+        error !== null &&
+        "code" in error &&
+        error.code === "P2002"
+      )
+        throw conflict("A user with this login name already exists.");
+      throw error;
+    }
+
+    return ok(response, await getWorkspace(actor), 201);
   },
 );
 resourceRouter.patch(
@@ -104,31 +141,114 @@ resourceRouter.patch(
   requireRole(UserRole.ADMIN, UserRole.MANAGER),
   async (request, response) => {
     const patch = userPatchSchema.parse(request.body);
-    const workspace = await getWorkspace(request.actor!);
     const id = String(request.params.id);
-    const staff = workspace.staff.find((entry) => entry.id === id);
-    const employee = workspace.employees.find((entry) => entry.id === id);
-    const current = staff ?? employee;
+    const current = await prisma.user.findFirst({
+      where: {
+        id,
+        workspaceId: request.actor!.workspaceId,
+        archivedAt: null,
+      },
+    });
     if (!current) throw notFound("User was not found.");
-    if (patch.name !== undefined) current.name = patch.name;
-    if (patch.password !== undefined) current.password = patch.password;
-    if (employee && patch.jobTitle !== undefined)
-      employee.role = patch.jobTitle;
-    if (employee && patch.active !== undefined) employee.active = patch.active;
-    return ok(response, await saveWorkspace(workspace, request.actor));
+    if (patch.accountRole && current.role === UserRole.EMPLOYEE)
+      throw badRequest("Employee access must be edited from the team workspace.");
+    const nextRole = patch.accountRole
+      ? patch.accountRole === "Admin"
+        ? UserRole.ADMIN
+        : UserRole.MANAGER
+      : current.role;
+    if (current.role === UserRole.ADMIN && nextRole !== UserRole.ADMIN) {
+      const adminCount = await prisma.user.count({
+        where: {
+          workspaceId: request.actor!.workspaceId,
+          role: UserRole.ADMIN,
+          archivedAt: null,
+        },
+      });
+      if (adminCount <= 1)
+        throw badRequest("The workspace must keep at least one admin account.");
+    }
+    if (patch.name) {
+      const duplicate = await prisma.user.findFirst({
+        where: {
+          workspaceId: request.actor!.workspaceId,
+          normalizedName: patch.name.toLocaleLowerCase(),
+          id: { not: id },
+        },
+      });
+      if (duplicate)
+        throw conflict("A user with this login name already exists.");
+    }
+    const updated = await prisma.user.update({
+      where: { id },
+      data: {
+        ...(patch.name
+          ? {
+              loginName: patch.name,
+              normalizedName: patch.name.toLocaleLowerCase(),
+            }
+          : {}),
+        ...(patch.password
+          ? { passwordHash: await hashPassword(patch.password) }
+          : {}),
+        ...(patch.accountRole ? { role: nextRole } : {}),
+        ...(current.role === UserRole.EMPLOYEE && patch.jobTitle !== undefined
+          ? { jobTitle: patch.jobTitle }
+          : {}),
+        ...(current.role === UserRole.EMPLOYEE && patch.active !== undefined
+          ? { active: patch.active }
+          : {}),
+        version: { increment: 1 },
+      },
+    });
+    return ok(response, {
+      user: {
+        id: updated.id,
+        name: updated.loginName,
+        role:
+          updated.role === UserRole.ADMIN
+            ? ("Admin" as const)
+            : updated.role === UserRole.MANAGER
+              ? ("Manager" as const)
+              : ("Employee" as const),
+      },
+    });
   },
 );
 resourceRouter.delete(
   "/users/:id",
   requireRole(UserRole.ADMIN, UserRole.MANAGER),
   async (request, response) => {
-    const workspace = await getWorkspace(request.actor!);
     const id = String(request.params.id);
-    workspace.staff = workspace.staff.filter((entry) => entry.id !== id);
-    workspace.employees = workspace.employees.filter(
-      (entry) => entry.id !== id,
-    );
-    await saveWorkspace(workspace, request.actor);
+    const current = await prisma.user.findFirst({
+      where: {
+        id,
+        workspaceId: request.actor!.workspaceId,
+        archivedAt: null,
+      },
+    });
+    if (!current) throw notFound("User was not found.");
+    if (current.id === request.actor!.id)
+      throw badRequest("You cannot delete your own signed-in account.");
+    if (current.role === UserRole.ADMIN) {
+      const adminCount = await prisma.user.count({
+        where: {
+          workspaceId: request.actor!.workspaceId,
+          role: UserRole.ADMIN,
+          archivedAt: null,
+        },
+      });
+      if (adminCount <= 1)
+        throw badRequest("The workspace must keep at least one admin account.");
+    }
+    await prisma.user.update({
+      where: { id },
+      data: {
+        archivedAt: new Date(),
+        active: false,
+        version: { increment: 1 },
+      },
+    });
     return response.status(204).send();
   },
 );
@@ -250,7 +370,10 @@ resourceRouter.post(
         database,
         request.actor!.workspaceId,
         input.fields,
-        input.externalId ? { externalId: input.externalId } : {},
+        {
+          ...(input.externalId ? { externalId: input.externalId } : {}),
+          ...(input.formId ? { formId: input.formId } : {}),
+        },
       ),
     );
     return ok(

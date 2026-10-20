@@ -80,6 +80,7 @@ export const orderCustomFieldValueSchema = z.union([
 ]);
 export const orderSchema = z.object({
   id: z.string().min(1).max(80),
+  formId: z.uuid().optional(),
   createdAt: z.number().int().optional(),
   source: z.enum(["Desk", "Frames 41"]).optional(),
   externalOrderId: z.string().max(160).optional(),

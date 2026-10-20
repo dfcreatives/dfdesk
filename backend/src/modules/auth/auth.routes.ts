@@ -21,6 +21,15 @@ const authLimit = rateLimit({
   limit: 20,
   standardHeaders: "draft-8",
   legacyHeaders: false,
+  handler: (_request, response) =>
+    response.status(429).type("application/problem+json").json({
+      type: "https://desk.local/problems/rate_limited",
+      title: "Too many requests",
+      status: 429,
+      detail: "Too many authentication attempts. Please try again later.",
+      code: "RATE_LIMITED",
+      requestId: String(response.locals.requestId),
+    }),
 });
 const cookieOptions = () => ({
   httpOnly: true,

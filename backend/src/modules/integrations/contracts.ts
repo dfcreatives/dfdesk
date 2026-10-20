@@ -16,12 +16,13 @@ export type CustomOrderSubmittedEvent = {
   eventType: typeof CUSTOM_ORDER_EVENT;
   eventVersion: 1;
   occurredAt: string;
-  source: "frames41";
-  clientId: typeof INTEGRATION_CLIENT_ID;
+  source: "frames41" | "ecommerce";
+  clientId: string;
   correlationId: string;
   aggregateId: string;
   payload: {
     externalId: string;
+    formId?: string;
     fields: Record<string, CustomOrderFieldValue>;
   };
 };
@@ -149,7 +150,11 @@ export function parseCustomOrderSubmittedEvent(
   const event = object(input, "Event");
   if (event.eventType !== CUSTOM_ORDER_EVENT || event.eventVersion !== 1)
     throw new Error("Unsupported event type or version.");
-  if (event.source !== "frames41" || event.clientId !== INTEGRATION_CLIENT_ID)
+  const clientId = text(event.clientId, "clientId", 80);
+  if (
+    (clientId === INTEGRATION_CLIENT_ID && event.source !== "frames41") ||
+    (clientId !== INTEGRATION_CLIENT_ID && event.source !== "ecommerce")
+  )
     throw new Error("Invalid integration source.");
   const payload = object(event.payload, "payload");
   const fields = object(payload.fields, "payload.fields");
@@ -164,12 +169,15 @@ export function parseCustomOrderSubmittedEvent(
     eventType: CUSTOM_ORDER_EVENT,
     eventVersion: 1,
     occurredAt: isoDate(event.occurredAt, "occurredAt"),
-    source: "frames41",
-    clientId: INTEGRATION_CLIENT_ID,
+    source: clientId === INTEGRATION_CLIENT_ID ? "frames41" : "ecommerce",
+    clientId,
     correlationId: text(event.correlationId, "correlationId", 160),
     aggregateId: text(event.aggregateId, "aggregateId", 160),
     payload: {
       externalId: text(payload.externalId, "payload.externalId", 160),
+      ...(payload.formId !== undefined
+        ? { formId: uuidText(payload.formId, "payload.formId") }
+        : {}),
       fields: parsedFields,
     },
   };
@@ -297,7 +305,7 @@ export function parseCommerceOrderPaidEvent(
     eventVersion: 1,
     occurredAt: isoDate(event.occurredAt, "occurredAt"),
     source: "frames41",
-    clientId: INTEGRATION_CLIENT_ID,
+    clientId: event.clientId,
     correlationId: text(event.correlationId, "correlationId", 160),
     aggregateId: text(event.aggregateId, "aggregateId", 160),
     payload: {

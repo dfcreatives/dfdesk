@@ -20,6 +20,7 @@ import { integrationsRouter } from "./modules/integrations/integrations.routes.j
 import { legacyWorkspaceRouter } from "./modules/legacy-workspace/legacy-workspace.routes.js";
 import { resourceRouter } from "./modules/resources/resource.routes.js";
 import { orderFieldsRouter } from "./modules/order-fields/order-fields.routes.js";
+import { orderFormsRouter } from "./modules/order-forms/order-forms.routes.js";
 import { ok } from "./shared/http/respond.js";
 import { openApiDocument } from "./openapi.js";
 
@@ -77,6 +78,7 @@ export function createApp() {
   app.use("/api/v1/attendance", attendanceRouter);
   app.use("/api/v1/integrations", integrationsRouter);
   app.use("/api/v1/order-fields", orderFieldsRouter);
+  app.use("/api/v1/order-forms", orderFormsRouter);
   app.use("/api/v1", resourceRouter);
   app.use("/api/workspace", legacyWorkspaceRouter);
   app.use("/api/attendance", legacyAttendanceRouter);

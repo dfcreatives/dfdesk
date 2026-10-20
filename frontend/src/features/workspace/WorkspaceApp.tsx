@@ -1,4 +1,4 @@
-import { useEffect, useState, type KeyboardEvent } from "react";
+import { useEffect, useRef, useState, type KeyboardEvent } from "react";
 import {
   ArrowUpRight,
   Banknote,
@@ -35,10 +35,12 @@ import { useLocation, useNavigate } from "react-router-dom";
 import { apiRequest } from "@/api/client";
 import type {
   Employee,
+  EcommerceConnection,
   Order,
   OrderCustomFieldValue,
   OrderFieldDefinition,
   OrderFieldType,
+  OrderForm,
   PaymentMethod,
   PaymentRecord,
   SessionUser,
@@ -53,6 +55,7 @@ import {
 } from "@/shared/navigation";
 import {
   formatRupees,
+  getAttendanceRecordSeconds,
   getAttendancePeriodRange,
   normalizeTask,
   parseRupeesInput,
@@ -60,6 +63,10 @@ import {
   withoutPassword,
   type AttendanceReportPeriod,
 } from "./workspace-utils";
+import {
+  validateLoginCredentials,
+  type LoginFieldErrors,
+} from "./login-validation";
 
 const navigation = [
   { label: "Overview", icon: LayoutDashboard },
@@ -103,6 +110,7 @@ export default function WorkspaceApp({
   const [currentUser, setCurrentUser] = useState<SessionUser | null>(null);
   const [employeeData, setEmployeeData] = useState<Employee[]>(employees);
   const [attendanceNow, setAttendanceNow] = useState(0);
+  const [attendanceSaving, setAttendanceSaving] = useState(false);
   const [showAttendanceReport, setShowAttendanceReport] = useState(false);
   const [attendanceReportPeriod, setAttendanceReportPeriod] =
     useState<AttendanceReportPeriod>("Weekly");
@@ -162,6 +170,14 @@ export default function WorkspaceApp({
   const [orderFieldDefinitions, setOrderFieldDefinitions] = useState<
     OrderFieldDefinition[]
   >([]);
+  const [orderForms, setOrderForms] = useState<OrderForm[]>([]);
+  const [ecommerceConnections, setEcommerceConnections] = useState<EcommerceConnection[]>([]);
+  const [selectedConnectionId, setSelectedConnectionId] = useState("");
+  const [selectedFormId, setSelectedFormId] = useState("");
+  const [orderSetupMode, setOrderSetupMode] = useState<"connection" | "form" | null>(null);
+  const [connectionName, setConnectionName] = useState("");
+  const [newFormName, setNewFormName] = useState("");
+  const [newConnectionSecret, setNewConnectionSecret] = useState("");
   const [showOrderFields, setShowOrderFields] = useState(false);
   const [editingOrderField, setEditingOrderField] =
     useState<OrderFieldDefinition | null>(null);
@@ -179,16 +195,23 @@ export default function WorkspaceApp({
   const [employeeName, setEmployeeName] = useState("");
   const [employeeRole, setEmployeeRole] = useState("");
   const [employeePassword, setEmployeePassword] = useState("");
+  const [employeeSaving, setEmployeeSaving] = useState(false);
+  const [employeeFormError, setEmployeeFormError] = useState("");
   const [staffData, setStaffData] = useState<StaffMember[]>(initialStaff);
   const [showStaffForm, setShowStaffForm] = useState(false);
   const [editingStaff, setEditingStaff] = useState<StaffMember | null>(null);
   const [staffName, setStaffName] = useState("");
   const [staffRole, setStaffRole] = useState<StaffMember["role"]>("Manager");
   const [staffPassword, setStaffPassword] = useState("");
+  const [staffSaving, setStaffSaving] = useState(false);
+  const [staffFormError, setStaffFormError] = useState("");
+  const [deletingStaffId, setDeletingStaffId] = useState<string | null>(null);
   const [loginName, setLoginName] = useState("");
   const [loginPassword, setLoginPassword] = useState("");
   const [showLoginPassword, setShowLoginPassword] = useState(false);
   const [loginError, setLoginError] = useState("");
+  const [loginFieldErrors, setLoginFieldErrors] =
+    useState<LoginFieldErrors>({});
   const [accountName, setAccountName] = useState("");
   const [accountCurrentPassword, setAccountCurrentPassword] = useState("");
   const [accountNewPassword, setAccountNewPassword] = useState("");
@@ -202,9 +225,13 @@ export default function WorkspaceApp({
   const [setupRequired, setSetupRequired] = useState(false);
   const [connectedWebsiteName, setConnectedWebsiteName] = useState("Commerce");
   const [isHydrated, setIsHydrated] = useState(false);
+  const skipNextWorkspaceSave = useRef(false);
+  const pendingWorkspaceSave = useRef<Workspace | null>(null);
+  const workspaceSaveInFlight = useRef(false);
   const currentRole: "Admin" | "Manager" =
     currentUser?.role === "Manager" ? "Manager" : "Admin";
-  const canManageEmployees = currentUser?.role === "Manager";
+  const canManageEmployees =
+    currentUser?.role === "Admin" || currentUser?.role === "Manager";
   const currentUserInitials =
     currentUser?.name
       .split(" ")
@@ -237,6 +264,39 @@ export default function WorkspaceApp({
     setTaskData(workspace.tasks.map(normalizeTask));
     setOrderData(workspace.orders);
     setPaymentRecords(workspace.payments);
+  }
+
+  async function drainWorkspaceSaveQueue() {
+    if (workspaceSaveInFlight.current) return;
+    workspaceSaveInFlight.current = true;
+    try {
+      while (pendingWorkspaceSave.current) {
+        const workspace = pendingWorkspaceSave.current;
+        pendingWorkspaceSave.current = null;
+        await apiRequest<{ workspace: Workspace }>("/api/workspace", {
+          method: "PUT",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ workspace }),
+        });
+        setSyncError("");
+        setEmployeeData((current) =>
+          current.some((employee) => employee.password)
+            ? current.map(withoutPassword)
+            : current,
+        );
+        setStaffData((current) =>
+          current.some((member) => member.password)
+            ? current.map(withoutPassword)
+            : current,
+        );
+      }
+    } catch (error) {
+      if (error instanceof Error && error.name !== "AbortError")
+        setSyncError(error.message);
+    } finally {
+      workspaceSaveInFlight.current = false;
+      if (pendingWorkspaceSave.current) void drainWorkspaceSaveQueue();
+    }
   }
 
   useEffect(() => {
@@ -305,11 +365,23 @@ export default function WorkspaceApp({
   useEffect(() => {
     if (!currentUser) return;
     let cancelled = false;
-    apiRequest<{ fields: OrderFieldDefinition[] }>("/api/v1/order-fields", {
-      cache: "no-store",
-    })
-      .then(({ fields }) => {
-        if (!cancelled) setOrderFieldDefinitions(fields);
+    Promise.all([
+      apiRequest<{ forms: OrderForm[] }>("/api/v1/order-forms", { cache: "no-store" }),
+      apiRequest<{ connections: EcommerceConnection[] }>("/api/v1/order-forms/connections", { cache: "no-store" }),
+    ])
+      .then(async ([{ forms }, { connections }]) => {
+        if (cancelled) return;
+        setOrderForms(forms);
+        setEcommerceConnections(connections);
+        setSelectedConnectionId(connections.find((entry) => entry.enabled && !entry.legacy)?.id ?? "");
+        const selected = forms.find((form) => form.isDefault)?.id ?? forms[0]?.id ?? "";
+        setSelectedFormId(selected);
+        if (selected) {
+          const result = await apiRequest<{ fields: OrderFieldDefinition[] }>(
+            `/api/v1/order-fields?formId=${encodeURIComponent(selected)}`, { cache: "no-store" },
+          );
+          if (!cancelled) setOrderFieldDefinitions(result.fields);
+        }
       })
       .catch((error: Error) => {
         if (!cancelled) setSyncError(error.message);
@@ -321,41 +393,22 @@ export default function WorkspaceApp({
 
   useEffect(() => {
     if (!isHydrated || !currentUser || accountSaving) return;
-    const controller = new AbortController();
+    if (skipNextWorkspaceSave.current) {
+      skipNextWorkspaceSave.current = false;
+      return;
+    }
     const timeout = window.setTimeout(() => {
-      const workspace: Workspace = {
+      pendingWorkspaceSave.current = {
         employees: employeeData,
         staff: staffData,
         tasks: taskData,
         orders: orderData,
         payments: paymentRecords,
       };
-      apiRequest<{ workspace: Workspace }>("/api/workspace", {
-        method: "PUT",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ workspace }),
-        signal: controller.signal,
-      })
-        .then(() => {
-          setSyncError("");
-          setEmployeeData((current) =>
-            current.some((employee) => employee.password)
-              ? current.map(withoutPassword)
-              : current,
-          );
-          setStaffData((current) =>
-            current.some((member) => member.password)
-              ? current.map(withoutPassword)
-              : current,
-          );
-        })
-        .catch((error: Error) => {
-          if (error.name !== "AbortError") setSyncError(error.message);
-        });
+      void drainWorkspaceSaveQueue();
     }, 250);
     return () => {
       window.clearTimeout(timeout);
-      controller.abort();
     };
   }, [
     currentUser,
@@ -587,86 +640,35 @@ export default function WorkspaceApp({
     return (person.attendanceRecords ?? [])
       .filter((record) => record.date === dateKey)
       .reduce((total, record) => {
-        const duration = record.clockOut
-          ? record.durationSeconds
-          : attendanceNow
-            ? Math.max(0, Math.floor((attendanceNow - record.clockIn) / 1000))
-            : 0;
+        const duration = attendanceNow
+          ? getAttendanceRecordSeconds(record, attendanceNow)
+          : record.durationSeconds;
         return total + duration;
       }, 0);
   }
 
-  function updateAttendanceEntry<T extends Employee | StaffMember>(
-    person: T,
-    now: number,
-  ): T {
-    if (person.attendanceStartedAt) {
-      const sessionSeconds = Math.max(
-        0,
-        Math.floor((now - person.attendanceStartedAt) / 1000),
+  async function toggleAttendance() {
+    if (!currentUser || attendanceSaving) return;
+    setAttendanceSaving(true);
+    setSyncError("");
+    try {
+      const response = await apiRequest<{ workspace: Workspace }>(
+        currentUserIsClockedIn
+          ? "/api/v1/attendance/clock-out"
+          : "/api/v1/attendance/clock-in",
+        { method: "POST" },
       );
-      const totalSeconds = (person.attendanceSeconds ?? 0) + sessionSeconds;
-      return {
-        ...person,
-        attendanceSeconds: totalSeconds,
-        attendanceStartedAt: null,
-        attendanceRecords: (person.attendanceRecords ?? []).map((record) =>
-          record.clockOut === null
-            ? {
-                ...record,
-                clockOut: now,
-                durationSeconds: sessionSeconds,
-              }
-            : record,
-        ),
-        ...(person && "hours" in person
-          ? { hours: formatAttendance(totalSeconds), active: false }
-          : {}),
-      };
-    }
-    return {
-      ...person,
-      attendanceStartedAt: now,
-      attendanceRecords: [
-        ...(person.attendanceRecords ?? []),
-        {
-          id: crypto.randomUUID(),
-          date: getLocalDateKey(now),
-          clockIn: now,
-          clockOut: null,
-          durationSeconds: 0,
-        },
-      ],
-      ...(person && "active" in person ? { active: true } : {}),
-    };
-  }
-
-  function toggleAttendance() {
-    if (!currentUser) return;
-    const now = Date.now();
-    setAttendanceNow(now);
-    if (currentUser.role === "Employee") {
-      setEmployeeData((current) =>
-        current.map((item) =>
-          item.id === currentUser.id
-            ? {
-                ...updateAttendanceEntry(item, now),
-                manualAttendance: (item.manualAttendance ?? []).filter(
-                  (entry) => entry.date !== getLocalDateKey(now),
-                ),
-              }
-            : item,
-        ),
+      applyWorkspace(response.workspace);
+      setAttendanceNow(Date.now());
+    } catch (error) {
+      setSyncError(
+        error instanceof Error
+          ? error.message
+          : "Unable to update attendance.",
       );
-      return;
+    } finally {
+      setAttendanceSaving(false);
     }
-    setStaffData((current) =>
-      current.map((member) =>
-        member.id === currentUser.id
-          ? updateAttendanceEntry(member, now)
-          : member,
-      ),
-    );
   }
 
   async function markManualAttendance(
@@ -701,16 +703,32 @@ export default function WorkspaceApp({
     setEditingEmployee(employee ?? null);
     setEmployeeName(employee?.name ?? "");
     setEmployeeRole(employee?.role ?? "");
-    setEmployeePassword(employee?.password ?? "");
+    setEmployeePassword("");
+    setEmployeeFormError("");
     setShowEmployeeForm(true);
   }
 
-  function saveEmployee() {
+  async function saveEmployee() {
     if (!canManageEmployees) return;
     const name = employeeName.trim();
     const role = employeeRole.trim();
-    if (!name || !role || (!editingEmployee && !employeePassword.trim()))
+    const password = employeePassword;
+    if (!name) {
+      setEmployeeFormError("Enter the employee's full name.");
       return;
+    }
+    if (!role) {
+      setEmployeeFormError("Enter the employee's role or department.");
+      return;
+    }
+    if (!editingEmployee && !password) {
+      setEmployeeFormError("Create a password with at least 8 characters.");
+      return;
+    }
+    if (password && password.length < 8) {
+      setEmployeeFormError("Password must contain at least 8 characters.");
+      return;
+    }
     const initials = name
       .split(" ")
       .map((part) => part[0])
@@ -728,34 +746,51 @@ export default function WorkspaceApp({
       attendanceRecords: [],
       manualAttendance: [],
       task: "0%",
-      active: false,
+      active: editingEmployee?.active ?? true,
       id: editingEmployee?.id ?? crypto.randomUUID(),
-      password: employeePassword,
+      ...(password ? { password } : {}),
     };
-    setEmployeeData((current) =>
-      editingEmployee
-        ? current.map((item) =>
-            item.name === editingEmployee.name
-              ? {
-                  ...employee,
-                  hours: item.hours,
-                  attendanceSeconds: item.attendanceSeconds,
-                  attendanceStartedAt: item.attendanceStartedAt,
-                  attendanceRecords: item.attendanceRecords,
-                  manualAttendance: item.manualAttendance,
-                  task: item.task,
-                  active: item.active,
-                  password: employee.password || item.password,
-                }
+    setEmployeeSaving(true);
+    setEmployeeFormError("");
+    try {
+      if (editingEmployee) {
+        await apiRequest(`/api/v1/users/${editingEmployee.id}`, {
+          method: "PATCH",
+          body: JSON.stringify({
+            name,
+            jobTitle: role,
+            active: employee.active,
+            ...(password ? { password } : {}),
+          }),
+        });
+        skipNextWorkspaceSave.current = true;
+        setEmployeeData((current) =>
+          current.map((item) =>
+            item.id === editingEmployee.id
+              ? { ...item, name, role, initials }
               : item,
-          )
-        : [...current, employee],
-    );
-    setShowEmployeeForm(false);
-    setEmployeeName("");
-    setEmployeeRole("");
-    setEmployeePassword("");
-    setEditingEmployee(null);
+          ),
+        );
+      } else {
+        const workspace = await apiRequest<Workspace>("/api/v1/users", {
+          method: "POST",
+          body: JSON.stringify({ ...employee, accountRole: "Employee" }),
+        });
+        skipNextWorkspaceSave.current = true;
+        applyWorkspace(workspace);
+      }
+      setShowEmployeeForm(false);
+      setEmployeeName("");
+      setEmployeeRole("");
+      setEmployeePassword("");
+      setEditingEmployee(null);
+    } catch (error) {
+      setEmployeeFormError(
+        error instanceof Error ? error.message : "Unable to save the employee.",
+      );
+    } finally {
+      setEmployeeSaving(false);
+    }
   }
 
   function deleteEmployee(name: string) {
@@ -786,39 +821,113 @@ export default function WorkspaceApp({
     setStaffName(member?.name ?? "");
     setStaffRole(member?.role ?? "Manager");
     setStaffPassword(member?.password ?? "");
+    setStaffFormError("");
     setShowStaffForm(true);
   }
 
-  function saveStaff() {
+  async function saveStaff() {
     const name = staffName.trim();
-    if (!name || (!editingStaff && !staffPassword.trim())) return;
-    const member: StaffMember = {
-      id: editingStaff?.id ?? crypto.randomUUID(),
-      name,
-      role: staffRole,
-      password: staffPassword,
-      attendanceSeconds: editingStaff?.attendanceSeconds ?? 0,
-      attendanceStartedAt: editingStaff?.attendanceStartedAt ?? null,
-      attendanceRecords: editingStaff?.attendanceRecords ?? [],
-    };
-    setStaffData((current) => {
-      return editingStaff
-        ? current.map((item) => (item.id === editingStaff.id ? member : item))
-        : [...current, member];
-    });
-    setShowStaffForm(false);
-    setEditingStaff(null);
-    setStaffName("");
-    setStaffPassword("");
+    const password = staffPassword;
+    if (!name) {
+      setStaffFormError("Enter the staff member's full name.");
+      return;
+    }
+    if (!editingStaff && !password) {
+      setStaffFormError("Create a password with at least 8 characters.");
+      return;
+    }
+    if (password && password.length < 8) {
+      setStaffFormError("Password must contain at least 8 characters.");
+      return;
+    }
+    setStaffSaving(true);
+    setStaffFormError("");
+    try {
+      if (editingStaff) {
+        const { user } = await apiRequest<{
+          user: Pick<StaffMember, "id" | "name" | "role">;
+        }>(`/api/v1/users/${editingStaff.id}`, {
+          method: "PATCH",
+          body: JSON.stringify({
+            name,
+            accountRole: staffRole,
+            ...(password ? { password } : {}),
+          }),
+        });
+        skipNextWorkspaceSave.current = true;
+        setStaffData((current) =>
+          current.map((member) =>
+            member.id === user.id ? { ...member, ...user } : member,
+          ),
+        );
+        if (currentUser?.id === user.id) {
+          setCurrentUser({ ...currentUser, name: user.name, role: user.role });
+          setAccountName(user.name);
+        }
+      } else {
+        const workspace = await apiRequest<Workspace>("/api/v1/users", {
+          method: "POST",
+          body: JSON.stringify({
+            accountRole: staffRole,
+            name,
+            role: staffRole,
+            password,
+            attendanceSeconds: 0,
+            attendanceStartedAt: null,
+            attendanceRecords: [],
+          }),
+        });
+        skipNextWorkspaceSave.current = true;
+        applyWorkspace(workspace);
+      }
+      setShowStaffForm(false);
+      setEditingStaff(null);
+      setStaffName("");
+      setStaffPassword("");
+    } catch (error) {
+      setStaffFormError(
+        error instanceof Error
+          ? error.message
+          : "Unable to save the staff member.",
+      );
+    } finally {
+      setStaffSaving(false);
+    }
   }
 
-  function deleteStaff(id: string) {
-    if (window.confirm("Delete this admin or manager?"))
-      setStaffData((current) => current.filter((member) => member.id !== id));
+  async function deleteStaff(id: string) {
+    if (id === currentUser?.id) {
+      setSyncError(
+        "You cannot delete your signed-in account. Add another administrator and sign in as that account first.",
+      );
+      return;
+    }
+    if (!window.confirm("Delete this admin or manager?")) return;
+    setDeletingStaffId(id);
+    setSyncError("");
+    try {
+      await apiRequest<undefined>(`/api/v1/users/${id}`, {
+        method: "DELETE",
+      });
+      skipNextWorkspaceSave.current = true;
+      setStaffData((current) =>
+        current.filter((member) => member.id !== id),
+      );
+    } catch (error) {
+      setSyncError(
+        error instanceof Error
+          ? error.message
+          : "Unable to delete the staff member.",
+      );
+    } finally {
+      setDeletingStaffId(null);
+    }
   }
 
   async function login() {
-    if (!loginName.trim() || !loginPassword) return;
+    const fieldErrors = validateLoginCredentials(loginName, loginPassword);
+    setLoginFieldErrors(fieldErrors);
+    if (Object.keys(fieldErrors).length) return;
     setLoginError("");
     try {
       const response = await apiRequest<{
@@ -843,7 +952,9 @@ export default function WorkspaceApp({
 
   async function createFirstAdmin() {
     const name = loginName.trim();
-    if (!name || !loginPassword.trim()) return;
+    const fieldErrors = validateLoginCredentials(name, loginPassword);
+    setLoginFieldErrors(fieldErrors);
+    if (Object.keys(fieldErrors).length) return;
     setLoginError("");
     try {
       const response = await apiRequest<{
@@ -1329,12 +1440,66 @@ export default function WorkspaceApp({
     setFieldError("");
   }
 
-  async function reloadOrderFields() {
+  async function reloadOrderFields(formId = selectedFormId) {
     const response = await apiRequest<{ fields: OrderFieldDefinition[] }>(
-      "/api/v1/order-fields",
+      `/api/v1/order-fields${formId ? `?formId=${encodeURIComponent(formId)}` : ""}`,
       { cache: "no-store" },
     );
     setOrderFieldDefinitions(response.fields);
+  }
+
+  async function selectOrderForm(formId: string) {
+    setSelectedFormId(formId);
+    setEditingOrderField(null);
+    setFieldError("");
+    await reloadOrderFields(formId);
+  }
+
+  async function createEcommerceConnection() {
+    const displayName = connectionName.trim();
+    if (!displayName) {
+      setFieldError("Enter a name for this store.");
+      return;
+    }
+    try {
+      const result = await apiRequest<{ connection: EcommerceConnection; signingSecret: string }>(
+        "/api/v1/order-forms/connections", {
+          method: "POST", body: JSON.stringify({ displayName }),
+        },
+      );
+      setEcommerceConnections((current) => [...current, { ...result.connection, formCount: 0, legacy: false }]);
+      setSelectedConnectionId(result.connection.id);
+      setNewConnectionSecret(result.signingSecret);
+      setConnectionName("");
+      setOrderSetupMode(null);
+    } catch (error) {
+      setFieldError(error instanceof Error ? error.message : "Unable to create connection.");
+    }
+  }
+
+  async function createOrderForm() {
+    const name = newFormName.trim();
+    if (!name) {
+      setFieldError("Enter a name for this order form.");
+      return;
+    }
+    const connection = ecommerceConnections.find((entry) => entry.id === selectedConnectionId && entry.enabled);
+    if (!connection) {
+      setFieldError("Create an ecommerce connection first.");
+      return;
+    }
+    try {
+      const { form: newForm } = await apiRequest<{ form: { id: string } }>("/api/v1/order-forms", {
+        method: "POST", body: JSON.stringify({ name, integrationConnectionId: connection.id }),
+      });
+      const { forms } = await apiRequest<{ forms: OrderForm[] }>("/api/v1/order-forms", { cache: "no-store" });
+      setOrderForms(forms);
+      await selectOrderForm(newForm.id);
+      setNewFormName("");
+      setOrderSetupMode(null);
+    } catch (error) {
+      setFieldError(error instanceof Error ? error.message : "Unable to create form.");
+    }
   }
 
   async function saveOrderField() {
@@ -1361,6 +1526,7 @@ export default function WorkspaceApp({
         {
           method: editingOrderField ? "PATCH" : "POST",
           body: JSON.stringify({
+            formId: selectedFormId,
             label,
             type: fieldType,
             required: fieldRequired,
@@ -1452,8 +1618,8 @@ export default function WorkspaceApp({
       return;
     }
     const createdAt = editingOrder?.createdAt ?? Date.now();
-    const order: Order = editingOrder
-      ? { ...editingOrder, customFields: orderCustomFields }
+            const order: Order = editingOrder
+      ? { ...editingOrder, formId: selectedFormId || editingOrder.formId, customFields: orderCustomFields }
       : {
           id: `#CO-${String(Date.now()).slice(-8)}`,
           createdAt,
@@ -1462,6 +1628,7 @@ export default function WorkspaceApp({
           value: formatRupees(0),
           status: "Received",
           color: "orange",
+          ...(selectedFormId ? { formId: selectedFormId } : {}),
           customFields: orderCustomFields,
         };
     setOrderData((current) =>
@@ -1707,9 +1874,7 @@ export default function WorkspaceApp({
     .reduce(
       (total, record) =>
         total +
-        (record.clockOut
-          ? record.durationSeconds
-          : Math.max(0, Math.floor((attendanceNow - record.clockIn) / 1000))),
+        getAttendanceRecordSeconds(record, attendanceNow),
       0,
     );
   const currentAttendanceRecord = [
@@ -1766,9 +1931,7 @@ export default function WorkspaceApp({
   const attendanceReportTotalSeconds = attendanceReportRecords.reduce(
     (total, record) =>
       total +
-      (record.clockOut
-        ? record.durationSeconds
-        : Math.max(0, Math.floor((attendanceNow - record.clockIn) / 1000))),
+      getAttendanceRecordSeconds(record, attendanceNow),
     0,
   );
   const attendanceReportDays = Array.from(
@@ -1790,9 +1953,10 @@ export default function WorkspaceApp({
               record.clockOut,
             );
           }
-          existing.durationSeconds += record.clockOut
-            ? record.durationSeconds
-            : Math.max(0, Math.floor((attendanceNow - record.clockIn) / 1000));
+          existing.durationSeconds += getAttendanceRecordSeconds(
+            record,
+            attendanceNow,
+          );
           days.set(record.date, existing);
           return days;
         },
@@ -1980,7 +2144,9 @@ export default function WorkspaceApp({
               value: formatAttendance(
                 getDailyAttendanceSeconds(employee, todayKey),
               ),
-              detail: employee.active ? "Active today" : "Away today",
+              detail: employee.attendanceStartedAt
+                ? "Active today"
+                : "Away today",
             }))
           : activeNav === "Staff"
             ? visibleStaff.map((member) => ({
@@ -2103,6 +2269,7 @@ export default function WorkspaceApp({
         <section className="login-form-panel">
           <form
             className="login-card"
+            noValidate
             onSubmit={(event) => {
               event.preventDefault();
               void (isSetupMode ? createFirstAdmin() : login());
@@ -2127,24 +2294,44 @@ export default function WorkspaceApp({
             </div>
             <label className="input-label">
               {isSetupMode ? "Administrator name" : "Login name"}
-              <span className="login-input-shell">
+              <span
+                className={`login-input-shell${loginFieldErrors.name ? " invalid" : ""}`}
+              >
                 <UserRound size={18} aria-hidden="true" />
                 <input
                   className="form-input"
                   value={loginName}
                   onChange={(event) => {
                     setLoginName(event.target.value);
+                    setLoginFieldErrors((current) =>
+                      current.password ? { password: current.password } : {},
+                    );
                     setLoginError("");
                   }}
                   placeholder="Enter your full name"
                   autoComplete="username"
+                  name="username"
+                  required
+                  minLength={2}
+                  maxLength={80}
+                  aria-invalid={Boolean(loginFieldErrors.name)}
+                  aria-describedby={
+                    loginFieldErrors.name ? "login-name-error" : undefined
+                  }
                   autoFocus
                 />
               </span>
+              {loginFieldErrors.name && (
+                <span className="login-field-error" id="login-name-error">
+                  {loginFieldErrors.name}
+                </span>
+              )}
             </label>
             <label className="input-label">
               Password
-              <span className="login-input-shell">
+              <span
+                className={`login-input-shell${loginFieldErrors.password ? " invalid" : ""}`}
+              >
                 <LockKeyhole size={18} aria-hidden="true" />
                 <input
                   className="form-input"
@@ -2152,9 +2339,22 @@ export default function WorkspaceApp({
                   value={loginPassword}
                   onChange={(event) => {
                     setLoginPassword(event.target.value);
+                    setLoginFieldErrors((current) =>
+                      current.name ? { name: current.name } : {},
+                    );
                     setLoginError("");
                   }}
                   placeholder="Enter your password"
+                  name="password"
+                  required
+                  minLength={8}
+                  maxLength={256}
+                  aria-invalid={Boolean(loginFieldErrors.password)}
+                  aria-describedby={
+                    loginFieldErrors.password
+                      ? "login-password-error"
+                      : undefined
+                  }
                   autoComplete={
                     isSetupMode ? "new-password" : "current-password"
                   }
@@ -2170,8 +2370,17 @@ export default function WorkspaceApp({
                   {showLoginPassword ? <EyeOff size={18} /> : <Eye size={18} />}
                 </button>
               </span>
+              {loginFieldErrors.password && (
+                <span className="login-field-error" id="login-password-error">
+                  {loginFieldErrors.password}
+                </span>
+              )}
             </label>
-            {loginError && <p className="login-error">{loginError}</p>}
+            {loginError && (
+              <p className="login-error" role="alert" aria-live="polite">
+                {loginError}
+              </p>
+            )}
             <button
               className="button button-primary login-submit"
               type="submit"
@@ -2185,6 +2394,7 @@ export default function WorkspaceApp({
                 onClick={() => {
                   setIsSetupMode(false);
                   setLoginError("");
+                  setLoginFieldErrors({});
                 }}
               >
                 Back to sign in
@@ -2201,6 +2411,7 @@ export default function WorkspaceApp({
                     onClick={() => {
                       setIsSetupMode(true);
                       setLoginError("");
+                      setLoginFieldErrors({});
                     }}
                   >
                     Create the first account
@@ -2277,9 +2488,14 @@ export default function WorkspaceApp({
       <button
         className={`button attendance-button ${currentUserIsClockedIn ? "button-dark" : "button-primary"}`}
         onClick={toggleAttendance}
+        disabled={attendanceSaving}
       >
         <span className="live-pip" />
-        {currentUserIsClockedIn ? "Log out" : "Log in"}
+        {attendanceSaving
+          ? "Saving…"
+          : currentUserIsClockedIn
+            ? "Log out"
+            : "Log in"}
       </button>
       <div className="week-strip">
         {attendanceWeek.map((day) => (
@@ -3263,8 +3479,22 @@ export default function WorkspaceApp({
                                     (memberItem) =>
                                       memberItem.name === item.label,
                                   );
-                                  if (member) deleteStaff(member.id);
+                                  if (member) void deleteStaff(member.id);
                                 }}
+                                disabled={
+                                  deletingStaffId ===
+                                    staffData.find(
+                                      (member) => member.name === item.label,
+                                    )?.id
+                                }
+                                title={
+                                  currentUser.id ===
+                                  staffData.find(
+                                    (member) => member.name === item.label,
+                                  )?.id
+                                    ? "You cannot delete your signed-in account"
+                                    : undefined
+                                }
                                 aria-label={`Delete ${item.label}`}
                               >
                                 <Trash2 size={14} />
@@ -3537,8 +3767,13 @@ export default function WorkspaceApp({
                         <button
                           className="button button-dark employee-clock-button"
                           onClick={toggleAttendance}
+                          disabled={attendanceSaving}
                         >
-                          {currentUserIsClockedIn ? "Log out" : "Log in"}
+                          {attendanceSaving
+                            ? "Saving…"
+                            : currentUserIsClockedIn
+                              ? "Log out"
+                              : "Log in"}
                         </button>
                       </div>
                     )}
@@ -3689,7 +3924,7 @@ export default function WorkspaceApp({
                             </span>
                           </span>
                           <span
-                            className={`status-dot ${employee.active ? "is-active" : "is-away"}`}
+                            className={`status-dot ${employee.attendanceStartedAt ? "is-active" : "is-away"}`}
                           />
                         </button>
                       ))}
@@ -3741,15 +3976,10 @@ export default function WorkspaceApp({
                                 <small>Duration</small>
                                 <strong>
                                   {formatAttendance(
-                                    record.clockOut
-                                      ? record.durationSeconds
-                                      : Math.max(
-                                          0,
-                                          Math.floor(
-                                            (attendanceNow - record.clockIn) /
-                                              1000,
-                                          ),
-                                        ),
+                                    getAttendanceRecordSeconds(
+                                      record,
+                                      attendanceNow,
+                                    ),
                                   )}
                                 </strong>
                               </span>
@@ -4520,9 +4750,12 @@ export default function WorkspaceApp({
             </div>
             <button
               className="button button-primary modal-submit"
-              onClick={saveStaff}
+              onClick={() => void saveStaff()}
+              disabled={staffSaving}
             >
-              {editingStaff ? (
+              {staffSaving ? (
+                "Saving…"
+              ) : editingStaff ? (
                 <>
                   <Check size={16} />
                   Save changes
@@ -4534,6 +4767,11 @@ export default function WorkspaceApp({
                 </>
               )}
             </button>
+            {staffFormError && (
+              <p className="task-form-error" role="alert">
+                {staffFormError}
+              </p>
+            )}
           </div>
         </div>
       )}
@@ -4601,9 +4839,12 @@ export default function WorkspaceApp({
             </label>
             <button
               className="button button-primary modal-submit"
-              onClick={saveEmployee}
+              onClick={() => void saveEmployee()}
+              disabled={employeeSaving}
             >
-              {editingEmployee ? (
+              {employeeSaving ? (
+                "Saving..."
+              ) : editingEmployee ? (
                 <>
                   <Check size={16} />
                   Save changes
@@ -4615,6 +4856,11 @@ export default function WorkspaceApp({
                 </>
               )}
             </button>
+            {employeeFormError && (
+              <p className="task-form-error" role="alert">
+                {employeeFormError}
+              </p>
+            )}
           </div>
         </div>
       )}
@@ -4646,6 +4892,93 @@ export default function WorkspaceApp({
               </button>
             </div>
             <div className="order-field-manager">
+              <div className="order-form-toolbar">
+                <div className="order-setup-intro">
+                  <strong>Connect your store and its order forms</strong>
+                  <p>
+                    A store is your ecommerce website or backend. A form is one
+                    checkout/custom-order form on that store. Connect each store
+                    once, then create a Desk form for every different checkout form.
+                  </p>
+                </div>
+                <label>
+                  Order form
+                  <select
+                    value={selectedFormId}
+                    onChange={(event) => void selectOrderForm(event.target.value)}
+                  >
+                    {orderForms.map((form) => (
+                      <option key={form.id} value={form.id}>
+                        {form.name} — {form.integrationConnection.displayName}
+                        {form.isDefault ? " (default)" : ""}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+                {orderForms.find((form) => form.id === selectedFormId) && (
+                  <div className="order-form-id-note">
+                    <span>This form has its own API ID</span>
+                    <code>{selectedFormId}</code>
+                  </div>
+                )}
+                {currentUser?.role === "Admin" && !newConnectionSecret && (
+                  <div className="order-form-actions">
+                    <button className="order-setup-button" onClick={() => { setOrderSetupMode("connection"); setFieldError(""); }}>
+                      Connect a store
+                    </button>
+                    <button className="order-setup-button order-setup-button-secondary" onClick={() => { setOrderSetupMode("form"); setFieldError(""); }}>
+                      Add another order form
+                    </button>
+                  </div>
+                )}
+                {orderSetupMode === "connection" && (
+                  <div className="order-setup-panel">
+                    <strong>Connect a store</strong>
+                    <p>Give it a name you recognize, such as “Main Shopify store” or “Wholesale site”.</p>
+                    <label>
+                      Store name
+                      <input value={connectionName} onChange={(event) => setConnectionName(event.target.value)} placeholder="e.g. Main website" />
+                    </label>
+                    <div className="order-setup-actions">
+                      <button className="order-setup-button" onClick={() => void createEcommerceConnection()}>Connect store</button>
+                      <button className="order-setup-cancel" onClick={() => setOrderSetupMode(null)}>Cancel</button>
+                    </div>
+                  </div>
+                )}
+                {orderSetupMode === "form" && (
+                  <div className="order-setup-panel">
+                    <strong>Create an order form</strong>
+                    <p>This should match one specific checkout or custom-order form on the selected store. You can add more forms to the same store later.</p>
+                    <label>
+                      Which store sends these orders?
+                      <select value={selectedConnectionId} onChange={(event) => setSelectedConnectionId(event.target.value)}>
+                        <option value="">Choose a store</option>
+                        {ecommerceConnections.filter((entry) => entry.enabled && !entry.legacy).map((entry) => (
+                          <option key={entry.id} value={entry.id}>{entry.displayName} — store connection</option>
+                        ))}
+                      </select>
+                    </label>
+                    <label>
+                      Order form name
+                      <input value={newFormName} onChange={(event) => setNewFormName(event.target.value)} placeholder="e.g. Custom photo-book order" />
+                    </label>
+                    <div className="order-setup-actions">
+                      <button className="order-setup-button" onClick={() => void createOrderForm()}>Create order form</button>
+                      <button className="order-setup-cancel" onClick={() => setOrderSetupMode(null)}>Cancel</button>
+                    </div>
+                  </div>
+                )}
+                {newConnectionSecret && (
+                  <div className="order-secret-note">
+                    <strong>Store connected. Save this API secret.</strong>
+                    <p>This is a private key for your ecommerce server. Whoever configures the API on that server will need it to send orders to Desk. It is only shown once; connecting the store alone does not send orders.</p>
+                    <code>{newConnectionSecret}</code>
+                    <button className="order-setup-cancel" onClick={() => void navigator.clipboard?.writeText(newConnectionSecret)}>Copy secret</button>
+                    <button className="order-setup-button" onClick={() => { setNewConnectionSecret(""); setOrderSetupMode("form"); }}>I saved it — create the first form</button>
+                  </div>
+                )}
+                {fieldError && <p className="order-setup-error" role="alert">{fieldError}</p>}
+              </div>
               <div className="order-field-list">
                 {orderFieldDefinitions.length ? (
                   orderFieldDefinitions.map((field, index) => (

@@ -1,6 +1,6 @@
-  # Custom order form API
+# Custom order forms and ecommerce API
 
-This API lets an authenticated Desk client discover the custom fields configured for a workspace and submit an order containing values for those fields.
+Each ecommerce account can have multiple custom order forms. A form ID is stable and scopes its field keys, submissions, and imported orders. Use the signed integration API below from ecommerce servers; cookie-authenticated endpoints are for Desk staff and administrators.
 
 > This is an internal staff API, not an anonymous storefront endpoint. Reading the form requires an authenticated account. Creating or updating an order requires an `Admin` or `Manager` account.
 
@@ -44,11 +44,92 @@ The response contains `data.csrfToken`. Every modifying request must send:
 
 Keep session cookies and CSRF tokens secret.
 
-## Submission flow
+## Ecommerce integration flow
 
-1. Call `GET /api/v1/order-fields` when the form opens.
+An Admin creates one store connection per ecommerce account in **Orders → Customize order fields → Connect a store**. A connection is the identity and credentials for one ecommerce backend. Desk returns a `clientKey` and displays its `signingSecret` once; save both in that backend's server environment. Then create one order form per distinct checkout/custom-order form on that store. A form ID is returned by `GET /api/v1/order-forms` and in the signed forms discovery response.
+
+Sign requests with HMAC-SHA256 using `timestamp + "." + rawRequestBody`, where timestamp is Unix seconds and the body is the exact UTF-8 request body sent. For a GET with no body, sign `timestamp + "."`. Send `X-DF-Client: <clientKey>`, `X-DF-Timestamp: <unix-seconds>`, and `X-DF-Signature: sha256=<lowercase-hex-digest>`. The client key and secret belong to that ecommerce connection. Never expose the secret in browser code.
+
+Example Node.js signing helper:
+
+```js
+import { createHmac } from "node:crypto";
+
+function integrationHeaders(clientKey, signingSecret, body = "") {
+  const timestamp = Math.floor(Date.now() / 1000).toString();
+  const signature = createHmac("sha256", signingSecret)
+    .update(`${timestamp}.${body}`, "utf8")
+    .digest("hex");
+  return {
+    "X-DF-Client": clientKey,
+    "X-DF-Timestamp": timestamp,
+    "X-DF-Signature": `sha256=${signature}`,
+  };
+}
+```
+
+Call `GET /api/v1/integrations/forms` with the helper above and an empty body to discover that account's active forms and fields. For each submitted event, include the selected stable `formId` and send `POST /api/v1/integrations/orders/custom` signed over the exact JSON string being sent. The server rejects forms belonging to another account and unknown field keys.
+
+Example event:
+
+```json
+{
+  "eventId": "5ef473ca-c2a0-47fb-a746-c1b9b6045145",
+  "eventType": "custom_order.submitted.v1",
+  "eventVersion": 1,
+  "occurredAt": "2026-10-03T10:00:00.000Z",
+  "source": "ecommerce",
+  "clientId": "<connection client key>",
+  "correlationId": "8642473e-b3d1-4c62-8ec9-26cb27b11aa2",
+  "aggregateId": "store-order-10428",
+  "payload": {
+    "externalId": "store-order-10428",
+    "formId": "<form UUID>",
+    "fields": { "print_finish": "Matte", "gift_wrap": true }
+  }
+}
+```
+
+For write requests also send `X-DF-Event-Id`, `X-Correlation-Id`, and `Idempotency-Key` (equal to `eventId`). The exact field keys and allowed values come from the form discovery response.
+
+Example submission:
+
+```js
+const body = JSON.stringify(event);
+const headers = {
+  ...integrationHeaders(clientKey, signingSecret, body),
+  "Content-Type": "application/json",
+  "X-DF-Event-Id": event.eventId,
+  "X-Correlation-Id": event.correlationId,
+  "Idempotency-Key": event.eventId,
+};
+const response = await fetch(`${DESK_API_URL}/api/v1/integrations/orders/custom`, {
+  method: "POST",
+  headers,
+  body,
+});
+```
+
+The first accepted event returns `201` and `data.accepted`, `data.duplicate`, and `data.deskOrderId`. Replaying the same event ID with the same body returns `200` with `duplicate: true`. Reusing an external order ID with a different event returns `409`.
+
+## Manage stores and forms (Desk Admin)
+
+These routes use the Desk session cookie and CSRF protection described above.
+
+- `GET /api/v1/order-forms/connections` — list this workspace's store connections.
+- `POST /api/v1/order-forms/connections` — create a connection. Send `{ "displayName": "Main website" }`. The `data` response contains the `connection.clientKey` and one-time `signingSecret`.
+- `GET /api/v1/order-forms` — list forms, their IDs, store connections, and counts.
+- `POST /api/v1/order-forms` — create a form with `{ "name": "Custom photo book", "integrationConnectionId": "<connection UUID>" }`.
+- `PATCH /api/v1/order-forms/{formId}` — rename or disable a non-default form.
+- `DELETE /api/v1/order-forms/{formId}` — archive a non-default form.
+
+Creating connections and forms requires the `Admin` role. Form field editing supports both Admins and Managers.
+
+## Desk staff submission flow
+
+1. Call `GET /api/v1/order-forms` to list workspace forms, then `GET /api/v1/order-fields?formId=<UUID>` when the selected form opens.
 2. Render an input for each returned field definition.
-3. Use each definition's stable `key` in the submitted `customFields` object.
+3. Use each definition's stable `key` in the submitted `customFields` object and include the same `formId` in the order.
 4. Validate required and type-specific values in the client.
 5. Submit the complete order to `POST /api/v1/orders`.
 
@@ -57,12 +138,12 @@ Always discover fields from the API. Labels and ordering can change.
 ## Get custom-field definitions
 
 ```http
-GET /api/v1/order-fields
+GET /api/v1/order-fields?formId=<FORM_UUID>
 Cookie: desk_session=...
 ```
 
 ```bash
-curl -b cookies.txt http://localhost:4000/api/v1/order-fields
+curl -b cookies.txt 'http://localhost:4000/api/v1/order-fields?formId=FORM_UUID'
 ```
 
 Example response:
@@ -70,6 +151,7 @@ Example response:
 ```json
 {
   "data": {
+    "formId": "a8ccf4fa-b497-49ba-a132-9ba4eb9ecc3d",
     "fields": [
       {
         "id": "c8ccf4fa-b497-49ba-a132-9ba4eb9ecc3d",
@@ -133,6 +215,7 @@ Request example:
 ```json
 {
   "id": "#FF-10428",
+  "formId": "a8ccf4fa-b497-49ba-a132-9ba4eb9ecc3d",
   "createdAt": 1788782400000,
   "source": "Desk",
   "customer": "Ananya Rao",
@@ -163,6 +246,7 @@ curl -i -b cookies.txt \
   -H 'X-CSRF-Token: CSRF_TOKEN' \
   -d '{
     "id":"#FF-10428",
+    "formId":"a8ccf4fa-b497-49ba-a132-9ba4eb9ecc3d",
     "customer":"Ananya Rao",
     "customerMobile":"+91 98765 43210",
     "item":"Wedding photo book",
@@ -251,7 +335,7 @@ Common statuses:
 
 | Status | Meaning |
 | --- | --- |
-| `400` | Invalid standard field, missing required field, unknown custom key, or wrong custom value type |
+| `400` | Invalid form/order data, missing required field, or wrong custom value type. Signed ecommerce submissions also reject unknown field keys. |
 | `401` | No valid Desk session |
 | `403` | Invalid origin/CSRF token or insufficient role |
 | `404` | Order or field not found in the workspace |
@@ -269,6 +353,7 @@ Create example:
 
 ```json
 {
+  "formId": "a8ccf4fa-b497-49ba-a132-9ba4eb9ecc3d",
   "label": "Print finish",
   "type": "SELECT",
   "required": true,

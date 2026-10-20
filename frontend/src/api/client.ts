@@ -20,7 +20,9 @@ export async function apiRequest<T>(
   init: RequestInit = {},
 ): Promise<T> {
   const controller = new AbortController();
-  const timeout = window.setTimeout(() => controller.abort(), 10_000);
+  // Hosted PostgreSQL may need several seconds to resume after being idle.
+  // Keep enough headroom for the API to connect and complete the operation.
+  const timeout = window.setTimeout(() => controller.abort(), 90_000);
   const headers = new Headers(init.headers);
   headers.set("accept", "application/json");
   if (init.body && !headers.has("content-type"))
@@ -39,8 +41,20 @@ export async function apiRequest<T>(
       signal: init.signal ?? controller.signal,
     });
     if (response.status === 204) return undefined as T;
-    const body = (await response.json()) as
-      T | ProblemDetails | { error?: string };
+    const responseText = await response.text();
+    let body: T | ProblemDetails | { error?: string } | undefined;
+    try {
+      body = responseText ? (JSON.parse(responseText) as typeof body) : undefined;
+    } catch {
+      if (response.ok)
+        throw new ApiError({
+          type: "about:blank",
+          title: "Invalid server response",
+          status: response.status,
+          detail: "The server returned a response the app could not read.",
+          code: "INVALID_RESPONSE",
+        });
+    }
     if (!response.ok) {
       const record =
         body && typeof body === "object"
@@ -49,7 +63,11 @@ export async function apiRequest<T>(
       if (typeof record.detail === "string")
         throw new ApiError(record as ProblemDetails);
       const detail =
-        typeof record.error === "string" ? record.error : "Request failed.";
+        typeof record.error === "string"
+          ? record.error
+          : response.status === 429
+            ? "Too many requests. Please try again later."
+            : "Request failed.";
       throw new ApiError({
         type: "about:blank",
         title: "Request failed",

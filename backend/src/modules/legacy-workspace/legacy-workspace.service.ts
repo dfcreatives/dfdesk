@@ -44,6 +44,19 @@ const asDate = (value?: string | number | null) =>
   value ? new Date(value) : null;
 const dateOnly = (value: Date | null) =>
   value?.toISOString().slice(0, 10) ?? "";
+const attendanceDurationSeconds = (record: {
+  clockIn: Date;
+  clockOut: Date | null;
+  durationSeconds: number;
+}) =>
+  record.clockOut
+    ? Math.max(
+        0,
+        Math.floor(
+          (record.clockOut.getTime() - record.clockIn.getTime()) / 1000,
+        ),
+      )
+    : record.durationSeconds;
 const sourceLabel = (value: string) =>
   value === "FRAMES_41" ? ("Frames 41" as const) : ("Desk" as const);
 const paymentSourceLabel = (value: string) =>
@@ -121,7 +134,7 @@ export async function getWorkspace(actor: Actor): Promise<Workspace> {
       : orders;
   const attendanceFields = (user: (typeof users)[number]) => ({
     attendanceSeconds: user.attendance.reduce(
-      (sum, record) => sum + record.durationSeconds,
+      (sum, record) => sum + attendanceDurationSeconds(record),
       0,
     ),
     attendanceStartedAt:
@@ -132,7 +145,7 @@ export async function getWorkspace(actor: Actor): Promise<Workspace> {
       date: dateOnly(record.workDate),
       clockIn: record.clockIn.getTime(),
       clockOut: record.clockOut?.getTime() ?? null,
-      durationSeconds: record.durationSeconds,
+      durationSeconds: attendanceDurationSeconds(record),
     })),
   });
   const employees = users
@@ -207,6 +220,7 @@ export async function getWorkspace(actor: Actor): Promise<Workspace> {
       ...(order.externalOrderId
         ? { externalOrderId: order.externalOrderId }
         : {}),
+      ...(order.customFormId ? { formId: order.customFormId } : {}),
       ...(order.externalOrderNumber
         ? { externalOrderNumber: order.externalOrderNumber }
         : {}),
@@ -324,6 +338,15 @@ export async function saveWorkspace(
     ];
     if (!incomingUsers.some((user) => user.accountRole === UserRole.ADMIN))
       throw badRequest("The workspace must keep at least one admin account.");
+    // Account names are unique across the workspace. Free the current names
+    // first so valid renames and swaps do not fail based on update order.
+    for (const user of incomingUsers) {
+      if (existingUsers.some((entry) => entry.id === user.id))
+        await database.user.update({
+          where: { id: user.id },
+          data: { normalizedName: `__save_${crypto.randomUUID()}` },
+        });
+    }
     for (const user of incomingUsers) {
       const current = existingUsers.find((entry) => entry.id === user.id);
       if (!current && !passwordHashes.has(user.id))
@@ -489,13 +512,36 @@ export async function saveWorkspace(
   };
   const pendingSyncIds = options?.transaction
     ? await operation(options.transaction)
-    : await prisma.$transaction(operation, {
-        isolationLevel: Prisma.TransactionIsolationLevel.Serializable,
-        timeout: 15_000,
-      });
+    : await withSerializableRetry(operation);
   if (options?.transaction) return incoming;
   for (const displayId of pendingSyncIds) await syncOrder(actor, displayId);
   return getWorkspace(actor);
+}
+
+async function withSerializableRetry<T>(
+  operation: (database: Prisma.TransactionClient) => Promise<T>,
+) {
+  const maxAttempts = 5;
+  for (let attempt = 1; ; attempt += 1) {
+    try {
+      return await prisma.$transaction(operation, {
+        isolationLevel: Prisma.TransactionIsolationLevel.Serializable,
+        maxWait: 10_000,
+        timeout: 60_000,
+      });
+    } catch (error) {
+      const retryable =
+        error instanceof Error &&
+        (("code" in error && error.code === "P2034") ||
+          /\b(?:40P01|40001)\b|deadlock detected|serialization failure/i.test(
+            error.message,
+          ));
+      if (!retryable || attempt >= maxAttempts) throw error;
+      await new Promise((resolve) =>
+        setTimeout(resolve, Math.min(250 * 2 ** (attempt - 1), 4_000)),
+      );
+    }
+  }
 }
 
 async function syncOrders(
@@ -505,8 +551,9 @@ async function syncOrders(
 ) {
   const workspaceId = actor.workspaceId;
   const changedSyncIds: string[] = [];
-  const fieldDefinitions = await database.orderFieldDefinition.findMany({
-    where: { workspaceId, archivedAt: null },
+  const defaultForm = await database.customOrderForm.findFirst({
+    where: { workspaceId, isDefault: true, archivedAt: null },
+    select: { id: true },
   });
   const existing = await database.order.findMany({
     where: { workspaceId },
@@ -519,6 +566,19 @@ async function syncOrders(
       throw badRequest("Frames 41 orders cannot be deleted from Desk.");
   for (const order of orders) {
     const current = existing.find((entry) => entry.displayId === order.id);
+    const formId = order.formId ?? current?.customFormId ?? defaultForm?.id;
+    if (formId) {
+      const validForm = await database.customOrderForm.findFirst({
+        where: { id: formId, workspaceId, archivedAt: null, enabled: true },
+        select: { id: true },
+      });
+      if (!validForm) throw badRequest("The order form is not available.");
+    }
+    const fieldDefinitions = formId
+      ? await database.orderFieldDefinition.findMany({
+          where: { workspaceId, formId, archivedAt: null },
+        })
+      : [];
     if (order.source === "Frames 41" && !current)
       throw badRequest(
         "Frames 41 orders can only be created by the integration API.",
@@ -611,6 +671,7 @@ async function syncOrders(
         where: { id: current.id },
         data: {
           customerId: customer.id,
+          ...(formId ? { customFormId: formId } : {}),
           assignedUserId: order.assignedEmployeeId ?? null,
           itemSummary: order.item,
           status: order.status,
@@ -639,6 +700,7 @@ async function syncOrders(
       const created = await database.order.create({
         data: {
           workspaceId,
+          ...(formId ? { customFormId: formId } : {}),
           customerId: customer.id,
           displayId: order.id,
           source: "DESK",
@@ -755,9 +817,6 @@ async function syncCustomFieldValues(
   const definitionsByKey = new Map(
     definitions.map((definition) => [definition.key, definition]),
   );
-  for (const key of Object.keys(values))
-    if (!definitionsByKey.has(key))
-      throw badRequest(`Unknown order custom field: ${key}.`);
   for (const definition of definitions)
     validateCustomFieldValue(
       definition,

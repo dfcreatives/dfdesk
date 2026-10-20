@@ -87,6 +87,7 @@ model Workspace {
   auditLogs   AuditLog[]
   migrations  MigrationRun[]
   orderFieldDefinitions OrderFieldDefinition[]
+  customOrderForms CustomOrderForm[]
 
   @@map("workspaces")
   @@schema("desk")
@@ -236,6 +237,8 @@ model Order {
   displayId           String               @map("display_id") @db.VarChar(80)
   source              OrderSource          @default(DESK)
   externalOrderId     String?              @map("external_order_id") @db.VarChar(160)
+  customFormId        String?              @map("custom_form_id") @db.Uuid
+  integrationConnectionId String?           @map("integration_connection_id") @db.Uuid
   externalOrderNumber String?              @map("external_order_number") @db.VarChar(160)
   importPayloadHash   String?              @map("import_payload_hash") @db.Char(64)
   itemSummary         String               @map("item_summary") @db.VarChar(500)
@@ -264,6 +267,8 @@ model Order {
   createdAt           DateTime             @default(now()) @map("created_at") @db.Timestamptz(3)
   updatedAt           DateTime             @updatedAt @map("updated_at") @db.Timestamptz(3)
   workspace           Workspace            @relation(fields: [workspaceId], references: [id], onDelete: Restrict)
+  customForm          CustomOrderForm?      @relation(fields: [customFormId], references: [id], onDelete: SetNull)
+  integrationConnection IntegrationConnection? @relation(fields: [integrationConnectionId], references: [id], onDelete: SetNull)
   customer            Customer             @relation(fields: [customerId], references: [id], onDelete: Restrict)
   assignedUser        User?                @relation("OrderAssignee", fields: [assignedUserId], references: [id], onDelete: SetNull)
   address             OrderAddress?
@@ -274,7 +279,7 @@ model Order {
   customFieldValues   OrderCustomFieldValue[]
 
   @@unique([workspaceId, displayId])
-  @@unique([workspaceId, externalOrderId])
+  @@unique([integrationConnectionId, externalOrderId])
   @@index([workspaceId, status, archivedAt])
   @@map("orders")
   @@schema("desk")
@@ -283,6 +288,7 @@ model Order {
 model OrderFieldDefinition {
   id          String         @id @default(uuid()) @db.Uuid
   workspaceId String         @map("workspace_id") @db.Uuid
+  formId      String         @map("form_id") @db.Uuid
   key         String         @db.VarChar(80)
   label       String         @db.VarChar(120)
   type        OrderFieldType
@@ -296,9 +302,10 @@ model OrderFieldDefinition {
   createdAt   DateTime       @default(now()) @map("created_at") @db.Timestamptz(3)
   updatedAt   DateTime       @updatedAt @map("updated_at") @db.Timestamptz(3)
   workspace   Workspace      @relation(fields: [workspaceId], references: [id], onDelete: Restrict)
+  form        CustomOrderForm @relation(fields: [formId], references: [id], onDelete: Restrict)
   values      OrderCustomFieldValue[]
 
-  @@unique([workspaceId, key])
+  @@unique([formId, key])
   @@index([workspaceId, archivedAt, position])
   @@map("order_field_definitions")
   @@schema("desk")
@@ -419,9 +426,32 @@ model IntegrationConnection {
   createdAt       DateTime  @default(now()) @map("created_at") @db.Timestamptz(3)
   updatedAt       DateTime  @updatedAt @map("updated_at") @db.Timestamptz(3)
   workspace       Workspace @relation(fields: [workspaceId], references: [id], onDelete: Restrict)
+  forms           CustomOrderForm[]
+  orders          Order[]
 
   @@unique([workspaceId, clientKey])
   @@map("integration_connections")
+  @@schema("desk")
+}
+
+model CustomOrderForm {
+  id                      String                 @id @default(uuid()) @db.Uuid
+  workspaceId             String                 @map("workspace_id") @db.Uuid
+  integrationConnectionId String                 @map("integration_connection_id") @db.Uuid
+  name                    String                 @db.VarChar(120)
+  isDefault               Boolean                @default(false) @map("is_default")
+  enabled                 Boolean                @default(true)
+  archivedAt              DateTime?              @map("archived_at") @db.Timestamptz(3)
+  createdAt               DateTime               @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt               DateTime               @updatedAt @map("updated_at") @db.Timestamptz(3)
+  workspace               Workspace              @relation(fields: [workspaceId], references: [id], onDelete: Restrict)
+  integrationConnection   IntegrationConnection  @relation(fields: [integrationConnectionId], references: [id], onDelete: Restrict)
+  fields                  OrderFieldDefinition[]
+  orders                  Order[]
+
+  @@index([workspaceId, archivedAt, name])
+  @@index([integrationConnectionId, enabled, archivedAt])
+  @@map("custom_order_forms")
   @@schema("desk")
 }
 

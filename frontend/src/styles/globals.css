@@ -2064,6 +2064,22 @@ button {
   background: #fff;
   box-shadow: 0 0 0 3px rgba(17, 17, 17, 0.08);
 }
+.login-input-shell.invalid {
+  border-color: #c2412f;
+  background: #fffafa;
+}
+.login-input-shell.invalid:focus-within {
+  border-color: #c2412f;
+  box-shadow: 0 0 0 3px rgba(194, 65, 47, 0.1);
+}
+.login-field-error {
+  display: block;
+  margin-top: 6px;
+  color: #a83222;
+  font-size: 11px;
+  font-weight: 600;
+  line-height: 1.4;
+}
 .login-role-toggle {
   display: grid;
   grid-template-columns: repeat(3, 1fr);
@@ -3745,4 +3761,101 @@ button {
   .attendance-report-modal .team-attendance-table.manager-controls {
     min-width: 1160px;
   }
+}
+.order-form-toolbar {
+  display: grid;
+  align-content: start;
+  gap: 14px;
+  padding: 14px;
+  border: 1px solid var(--line, #e5e7eb);
+  border-radius: 12px;
+}
+.order-setup-intro strong,
+.order-setup-panel > strong,
+.order-secret-note > strong {
+  display: block;
+  color: #25272b;
+  font-size: 14px;
+}
+.order-setup-intro p,
+.order-setup-panel p,
+.order-secret-note p {
+  margin: 5px 0 0;
+  color: #667085;
+  font-size: 12px;
+  line-height: 1.55;
+}
+.order-form-toolbar > label,
+.order-setup-panel > label {
+  display: grid;
+  gap: 6px;
+  color: #475569;
+  font-size: 12px;
+  font-weight: 600;
+}
+.order-form-toolbar select,
+.order-setup-panel input,
+.order-setup-panel select {
+  width: 100%;
+  min-height: 38px;
+  padding: 0 10px;
+  border: 1px solid #d7dce3;
+  border-radius: 8px;
+  background: white;
+}
+.order-form-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.order-setup-button,
+.order-setup-cancel {
+  min-height: 38px;
+  padding: 0 13px;
+  border: 1px solid #25272b;
+  border-radius: 8px;
+  background: #25272b;
+  color: #fff;
+  font-size: 12px;
+  font-weight: 650;
+}
+.order-setup-button-secondary,
+.order-setup-cancel {
+  border-color: #d7dce3;
+  background: #fff;
+  color: #343a46;
+}
+.order-setup-panel,
+.order-secret-note {
+  display: grid;
+  gap: 11px;
+  padding: 13px;
+  border: 1px solid #dce2e9;
+  border-radius: 10px;
+  background: #fff;
+}
+.order-setup-actions {
+  display: flex;
+  gap: 8px;
+}
+.order-form-id-note {
+  display: grid;
+  gap: 5px;
+  color: #667085;
+  font-size: 11px;
+}
+.order-form-id-note code,
+.order-secret-note code {
+  overflow-wrap: anywhere;
+  color: #343a46;
+  font-size: 11px;
+}
+.order-secret-note {
+  border-color: #b7d8c0;
+  background: #f5fbf6;
+}
+.order-setup-error {
+  margin: 0;
+  color: #b42318;
+  font-size: 12px;
 }

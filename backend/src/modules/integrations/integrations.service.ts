@@ -225,17 +225,46 @@ export async function createCustomOrderRecord(
     externalId?: string;
     occurredAt?: Date;
     payloadHash?: string;
+    formId?: string;
+    connectionId?: string;
   } = {},
 ) {
+  const form = options.formId
+    ? await database.customOrderForm.findFirst({
+        where: {
+          id: options.formId,
+          workspaceId,
+          enabled: true,
+          archivedAt: null,
+          ...(options.connectionId
+            ? { integrationConnectionId: options.connectionId }
+            : {}),
+        },
+      })
+    : await database.customOrderForm.findFirst({
+        where: {
+          workspaceId,
+          isDefault: true,
+          enabled: true,
+          archivedAt: null,
+        },
+      });
+  if (!form) throw badRequest("The custom order form was not found or is disabled.");
   if (options.externalId) {
     const existing = await database.order.findFirst({
-      where: { workspaceId, externalOrderId: options.externalId },
+      where: {
+        workspaceId,
+        ...(options.connectionId
+          ? { integrationConnectionId: options.connectionId }
+          : {}),
+        externalOrderId: options.externalId,
+      },
     });
     if (existing)
       throw conflict("This external order has already been submitted.");
   }
   const definitions = await database.orderFieldDefinition.findMany({
-    where: { workspaceId, archivedAt: null },
+    where: { workspaceId, formId: form.id, archivedAt: null },
     orderBy: { position: "asc" },
   });
   if (!definitions.length)
@@ -257,6 +286,10 @@ export async function createCustomOrderRecord(
   return database.order.create({
     data: {
       workspaceId,
+      customFormId: form.id,
+      ...(options.connectionId
+        ? { integrationConnectionId: options.connectionId }
+        : {}),
       customerId: customer.id,
       displayId: `#CO-${randomUUID().slice(0, 8).toUpperCase()}`,
       source: "DESK",
@@ -278,6 +311,7 @@ export async function createCustomOrderRecord(
 export async function importCustomOrder(
   event: CustomOrderSubmittedEvent,
   hash: string,
+  context: { workspaceId: string; connectionId: string; formId: string },
 ) {
   return prisma.$transaction(
     async (database) => {
@@ -291,22 +325,34 @@ export async function importCustomOrder(
             "IDEMPOTENCY_CONFLICT",
           );
         const order = await database.order.findFirst({
-          where: { externalOrderId: event.payload.externalId },
+          where: {
+            integrationConnectionId: context.connectionId,
+            externalOrderId: event.payload.externalId,
+          },
         });
         if (!order)
           throw conflict("The duplicate event has no matching custom order.");
         return { order, duplicate: true };
       }
       const existing = await database.order.findFirst({
-        where: { externalOrderId: event.payload.externalId },
+        where: {
+          integrationConnectionId: context.connectionId,
+          externalOrderId: event.payload.externalId,
+        },
       });
       if (existing)
         throw conflict("This external order has already been submitted.");
-      const workspace = await database.workspace.findFirst();
+      const workspace = await database.workspace.findUnique({
+        where: { id: context.workspaceId },
+      });
       if (!workspace)
         throw badRequest("Desk must be set up before orders can be imported.");
       const definitions = await database.orderFieldDefinition.findMany({
-        where: { workspaceId: workspace.id, archivedAt: null },
+        where: {
+          workspaceId: workspace.id,
+          formId: context.formId,
+          archivedAt: null,
+        },
         orderBy: { position: "asc" },
       });
       const byKey = new Map(definitions.map((field) => [field.key, field]));
@@ -344,10 +390,12 @@ export async function importCustomOrder(
       const order = await database.order.create({
         data: {
           workspaceId: workspace.id,
+          customFormId: context.formId,
+          integrationConnectionId: context.connectionId,
+          externalOrderId: event.payload.externalId,
           customerId: customer.id,
           displayId: `#CO-${randomUUID().slice(0, 8).toUpperCase()}`,
           source: "DESK",
-          externalOrderId: event.payload.externalId,
           externalOrderNumber: event.payload.externalId,
           importPayloadHash: hash,
           itemSummary: "Custom form submission",

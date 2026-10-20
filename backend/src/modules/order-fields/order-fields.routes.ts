@@ -78,12 +78,38 @@ function responseField(field: {
 export const orderFieldsRouter = Router();
 orderFieldsRouter.use(requireActor);
 
+async function resolveFormId(request: Express.Request, requested?: string) {
+  const queryFormId = (request as unknown as { query: { formId?: string } }).query.formId;
+  const formId = requested ?? queryFormId;
+  const form = formId
+    ? await prisma.customOrderForm.findFirst({
+        where: {
+          id: z.uuid().parse(formId),
+          workspaceId: request.actor!.workspaceId,
+          archivedAt: null,
+          enabled: true,
+        },
+        select: { id: true },
+      })
+    : await prisma.customOrderForm.findFirst({
+        where: {
+          workspaceId: request.actor!.workspaceId,
+          isDefault: true,
+          archivedAt: null,
+        },
+        select: { id: true },
+      });
+  if (!form) throw notFound("Custom order form was not found.");
+  return form.id;
+}
+
 orderFieldsRouter.get("/", async (request, response) => {
+  const formId = await resolveFormId(request);
   const fields = await prisma.orderFieldDefinition.findMany({
-    where: { workspaceId: request.actor!.workspaceId, archivedAt: null },
+    where: { workspaceId: request.actor!.workspaceId, formId, archivedAt: null },
     orderBy: [{ position: "asc" }, { createdAt: "asc" }],
   });
-  return ok(response, { fields: fields.map(responseField) });
+  return ok(response, { formId, fields: fields.map(responseField) });
 });
 
 orderFieldsRouter.post(
@@ -92,14 +118,15 @@ orderFieldsRouter.post(
   async (request, response) => {
     const input = fieldInputSchema.parse(request.body);
     const workspaceId = request.actor!.workspaceId;
+    const formId = await resolveFormId(request, request.body.formId);
     const count = await prisma.orderFieldDefinition.count({
-      where: { workspaceId, archivedAt: null },
+      where: { workspaceId, formId, archivedAt: null },
     });
     if (count >= 50)
       throw badRequest("An order form can contain at most 50 custom fields.");
     const baseKey = keyFromLabel(input.label);
     const matchingKeys = await prisma.orderFieldDefinition.findMany({
-      where: { workspaceId, key: { startsWith: baseKey } },
+      where: { workspaceId, formId, key: { startsWith: baseKey } },
       select: { key: true },
     });
     const keys = new Set(matchingKeys.map((entry) => entry.key));
@@ -107,12 +134,13 @@ orderFieldsRouter.post(
     for (let suffix = 2; keys.has(key); suffix += 1)
       key = `${baseKey}_${suffix}`;
     const last = await prisma.orderFieldDefinition.aggregate({
-      where: { workspaceId, archivedAt: null },
+      where: { workspaceId, formId, archivedAt: null },
       _max: { position: true },
     });
     const field = await prisma.orderFieldDefinition.create({
       data: {
         workspaceId,
+        formId,
         key,
         ...input,
         position: input.position ?? (last._max.position ?? -1) + 1,

@@ -75,6 +75,7 @@ export type Task = {
 
 export type Order = {
   id: string;
+  formId?: string | undefined;
   createdAt?: number | undefined;
   source?: "Desk" | "Frames 41" | undefined;
   externalOrderId?: string | undefined;
@@ -137,6 +138,32 @@ export type OrderFieldDefinition = {
   options: string[];
   position: number;
   showInList: boolean;
+};
+
+export type OrderForm = {
+  id: string;
+  name: string;
+  isDefault: boolean;
+  enabled: boolean;
+  integrationConnection: {
+    id: string;
+    clientKey: string;
+    displayName: string;
+    enabled: boolean;
+  };
+  fieldCount: number;
+  orderCount: number;
+};
+
+export type EcommerceConnection = {
+  id: string;
+  clientKey: string;
+  displayName: string;
+  apiIdentity: string;
+  baseUrl: string | null;
+  enabled: boolean;
+  formCount: number;
+  legacy: boolean;
 };
 
 export type PaymentMethod = "Cash" | "UPI" | "Split" | "Razorpay";
