@@ -3,7 +3,7 @@
   "rewrites": [
     {
       "source": "/api/:path*",
-      "destination": "https://deskbackend-production.up.railway.app/api/:path*"
+      "destination": "https://dfdesk.onrender.com/api/:path*"
     },
     {
       "source": "/(.*)",
