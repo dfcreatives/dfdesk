@@ -11,6 +11,8 @@ export const csrfProtection: RequestHandler = (request, _response, next) => {
     request.path === "/api/v1/auth/bootstrap" ||
     request.path === "/api/auth/login" ||
     request.path === "/api/auth/bootstrap" ||
+    request.path === "/api/v1/auth/admin-signup" ||
+    request.path === "/api/auth/admin-signup" ||
     request.path.startsWith("/api/v1/integrations/desk/") ||
     request.path === "/api/v1/integrations/orders/import" ||
     request.path === "/api/v1/integrations/orders/custom"

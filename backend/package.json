@@ -4,18 +4,18 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "dev": "node --env-file-if-exists=../.env.local --watch --import tsx src/server.ts",
+    "dev": "node --env-file-if-exists=.env --watch --import tsx src/server.ts",
     "build": "prisma generate && tsc -p tsconfig.build.json",
-    "start": "node --env-file-if-exists=../.env.local dist/src/server.js",
+    "start": "node --env-file-if-exists=.env dist/src/server.js",
     "typecheck": "tsc --noEmit --pretty false",
     "test": "vitest run --passWithNoTests",
     "db:generate": "npm run prisma:generate",
     "db:migrate": "npm run prisma:migrate",
-    "prisma:generate": "node --env-file-if-exists=../.env.local node_modules/prisma/build/index.js generate",
-    "prisma:migrate": "node --env-file-if-exists=../.env.local node_modules/prisma/build/index.js migrate deploy",
-    "migrate:legacy": "node --env-file-if-exists=../.env.local --import tsx scripts/migrate-legacy-workspace.ts",
-    "validate:migration": "node --env-file-if-exists=../.env.local --import tsx scripts/validate-migration.ts",
-    "export:legacy": "node --env-file-if-exists=../.env.local --import tsx scripts/export-legacy-workspace.ts"
+    "prisma:generate": "node --env-file-if-exists=.env node_modules/prisma/build/index.js generate",
+    "prisma:migrate": "node --env-file-if-exists=.env node_modules/prisma/build/index.js migrate deploy",
+    "migrate:legacy": "node --env-file-if-exists=.env --import tsx scripts/migrate-legacy-workspace.ts",
+    "validate:migration": "node --env-file-if-exists=.env --import tsx scripts/validate-migration.ts",
+    "export:legacy": "node --env-file-if-exists=.env --import tsx scripts/export-legacy-workspace.ts"
   },
   "dependencies": {
     "@prisma/client": "6.12.0",

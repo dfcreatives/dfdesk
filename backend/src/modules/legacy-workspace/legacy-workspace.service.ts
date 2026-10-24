@@ -117,21 +117,50 @@ export async function getWorkspace(actor: Actor): Promise<Workspace> {
       orderBy: { receivedAt: "asc" },
     }),
   ]);
+  const visibleEmployeeIds = new Set(
+    users
+      .filter((user) =>
+        role === UserRole.ADMIN || role === "Admin"
+          ? user.role === UserRole.EMPLOYEE
+          : role === UserRole.MANAGER || role === "Manager"
+            ? user.role === UserRole.EMPLOYEE && user.reportsToId === actor.id
+            : user.id === actor.id,
+      )
+      .map((user) => user.id),
+  );
+  const visibleUserIds = new Set([actor.id, ...visibleEmployeeIds]);
   const visibleTasks =
-    role === UserRole.EMPLOYEE || role === "Employee"
-      ? tasks.filter(
+    role === UserRole.ADMIN || role === "Admin"
+      ? tasks
+      : role === UserRole.MANAGER || role === "Manager"
+        ? tasks.filter(
+            (task) =>
+              (visibleUserIds.has(task.leadId ?? "") ||
+                task.assignees.some((entry) => visibleUserIds.has(entry.userId))) &&
+              (task.leadId === null || visibleUserIds.has(task.leadId)) &&
+              task.assignees.every((entry) => visibleUserIds.has(entry.userId)),
+          )
+        : tasks.filter(
           (task) =>
             task.leadId === actor.id ||
             task.assignees.some((entry) => entry.userId === actor.id),
-        )
-      : tasks;
-  const visibleOrderIds = new Set(
-    visibleTasks.map((task) => task.orderId).filter(Boolean),
-  );
+        );
+  const visibleOrderIds = new Set([
+    ...visibleTasks.map((task) => task.orderId).filter(Boolean),
+    ...orders
+      .filter((order) => order.assignedUserId && visibleUserIds.has(order.assignedUserId))
+      .map((order) => order.id),
+  ]);
   const visibleOrders =
-    role === UserRole.EMPLOYEE || role === "Employee"
+    role !== UserRole.ADMIN && role !== "Admin"
       ? orders.filter((order) => visibleOrderIds.has(order.id))
       : orders;
+  const visiblePaymentRows =
+    role === UserRole.ADMIN || role === "Admin"
+      ? payments
+      : payments.filter((payment) =>
+          payment.orderId ? visibleOrderIds.has(payment.orderId) : false,
+        );
   const attendanceFields = (user: (typeof users)[number]) => ({
     attendanceSeconds: user.attendance.reduce(
       (sum, record) => sum + attendanceDurationSeconds(record),
@@ -152,11 +181,11 @@ export async function getWorkspace(actor: Actor): Promise<Workspace> {
     .filter(
       (user) =>
         user.role === UserRole.EMPLOYEE &&
-        ((role !== UserRole.EMPLOYEE && role !== "Employee") ||
-          user.id === actor.id),
+        visibleEmployeeIds.has(user.id),
     )
     .map((user) => ({
       id: user.id,
+      reportsToId: user.reportsToId,
       name: user.loginName,
       role: user.jobTitle ?? "Employee",
       initials: user.initials ?? user.loginName.slice(0, 2).toUpperCase(),
@@ -181,9 +210,14 @@ export async function getWorkspace(actor: Actor): Promise<Workspace> {
     role === UserRole.EMPLOYEE || role === "Employee"
       ? []
       : users
-          .filter((user) => user.role !== UserRole.EMPLOYEE)
+          .filter((user) =>
+            role === UserRole.MANAGER || role === "Manager"
+              ? user.id === actor.id
+              : user.role !== UserRole.EMPLOYEE,
+          )
           .map((user) => ({
             id: user.id,
+            reportsToId: user.reportsToId,
             name: user.loginName,
             role: roleLabel(user.role) as "Admin" | "Manager",
             ...attendanceFields(user),
@@ -294,7 +328,7 @@ export async function getWorkspace(actor: Actor): Promise<Workspace> {
     payments:
       role === UserRole.EMPLOYEE || role === "Employee"
         ? []
-        : payments.map((payment) => ({
+        : visiblePaymentRows.map((payment) => ({
             id: payment.displayId,
             ...(payment.order ? { orderId: payment.order.displayId } : {}),
             source: paymentSourceLabel(payment.source),
@@ -318,6 +352,11 @@ export async function saveWorkspace(
   const incoming = workspaceSchema.parse(input);
   if (actor.role === UserRole.EMPLOYEE)
     return saveEmployeeWorkspace(incoming, actor);
+  if (actor.role === UserRole.MANAGER) {
+    const changedSyncIds = await saveManagerWorkspace(incoming, actor);
+    for (const displayId of changedSyncIds) await syncOrder(actor, displayId);
+    return getWorkspace(actor);
+  }
   const passwordHashes = new Map<string, string>();
   for (const user of [...incoming.employees, ...incoming.staff])
     if (user.password)
@@ -336,6 +375,24 @@ export async function saveWorkspace(
         accountRole: toRole(user.role),
       })),
     ];
+    for (const user of incomingUsers) {
+      if (!user.reportsToId) continue;
+      const parent = existingUsers.find((entry) => entry.id === user.reportsToId);
+      const expectedRole =
+        user.accountRole === UserRole.EMPLOYEE
+          ? UserRole.MANAGER
+          : user.accountRole === UserRole.MANAGER
+            ? UserRole.ADMIN
+            : null;
+      if (
+        !expectedRole ||
+        !parent ||
+        parent.workspaceId !== actor.workspaceId ||
+        parent.role !== expectedRole ||
+        parent.archivedAt
+      )
+        throw badRequest("The selected reporting manager is not available.");
+    }
     if (!incomingUsers.some((user) => user.accountRole === UserRole.ADMIN))
       throw badRequest("The workspace must keep at least one admin account.");
     // Account names are unique across the workspace. Free the current names
@@ -359,6 +416,7 @@ export async function saveWorkspace(
         initials: "initials" in user ? user.initials : null,
         color: "color" in user ? user.color : null,
         active: "active" in user ? user.active : true,
+        reportsToId: user.reportsToId ?? null,
       };
       if (current) {
         await database.user.update({
@@ -384,6 +442,13 @@ export async function saveWorkspace(
       }
     }
     const retainedIds = incomingUsers.map((user) => user.id);
+    await database.user.updateMany({
+      where: {
+        workspaceId: actor.workspaceId,
+        reportsToId: { not: null, notIn: retainedIds },
+      },
+      data: { reportsToId: null },
+    });
     await database.user.updateMany({
       where: { workspaceId: actor.workspaceId, id: { notIn: retainedIds } },
       data: { archivedAt: new Date(), active: false },
@@ -518,6 +583,168 @@ export async function saveWorkspace(
   return getWorkspace(actor);
 }
 
+async function saveManagerWorkspace(
+  incoming: z.infer<typeof workspaceSchema>,
+  actor: NonNullable<Express.Request["actor"]>,
+): Promise<string[]> {
+  const managerId = actor.id;
+  return prisma.$transaction(async (database) => {
+    const reports = await database.user.findMany({
+      where: {
+        workspaceId: actor.workspaceId,
+        reportsToId: managerId,
+        role: UserRole.EMPLOYEE,
+        archivedAt: null,
+      },
+      select: { id: true },
+    });
+    const teamIds = new Set([managerId, ...reports.map(({ id }) => id)]);
+    for (const employee of incoming.employees)
+      if (!teamIds.has(employee.id) || employee.id === managerId)
+        throw forbidden("Managers can only manage their assigned employees.");
+    for (const task of incoming.tasks) {
+      if (task.ownerId && !teamIds.has(task.ownerId))
+        throw forbidden("Tasks can only be assigned to your team.");
+      for (const collaborator of task.collaborators ?? [])
+        if (!teamIds.has(collaborator.employeeId))
+          throw forbidden("Tasks can only be assigned to your team.");
+    }
+
+    for (const employee of incoming.employees) {
+      if (!employee.manualAttendance) continue;
+      await database.manualAttendance.deleteMany({ where: { userId: employee.id } });
+      if (employee.manualAttendance.length)
+        await database.manualAttendance.createMany({
+          data: employee.manualAttendance.map((entry) => ({
+            userId: employee.id,
+            workDate: new Date(`${entry.date}T00:00:00.000Z`),
+            status: entry.status === "Absent" ? "ABSENT" : "PRESENT",
+            markedById: managerId,
+          })),
+        });
+    }
+
+    const scopedTasks = await database.task.findMany({
+      where: {
+        workspaceId: actor.workspaceId,
+        archivedAt: null,
+        OR: [
+          { leadId: { in: [...teamIds] } },
+          { assignees: { some: { userId: { in: [...teamIds] } } } },
+        ],
+      },
+      select: {
+        id: true,
+        leadId: true,
+        assignees: { select: { userId: true } },
+      },
+    });
+    const scopedTaskIds = scopedTasks
+      .filter(
+        (task) =>
+          (task.leadId === null || teamIds.has(task.leadId)) &&
+          task.assignees.every((entry) => teamIds.has(entry.userId)),
+      )
+      .map(({ id }) => id);
+    const allowedOrders = await database.order.findMany({
+      where: {
+        workspaceId: actor.workspaceId,
+        archivedAt: null,
+        OR: [
+          { assignedUserId: { in: [...teamIds] } },
+          { tasks: { some: { id: { in: scopedTaskIds } } } },
+        ],
+      },
+      select: { id: true, displayId: true },
+    });
+    const orderIds = new Map(allowedOrders.map((order) => [order.displayId, order.id]));
+    const allowedOrderDisplays = new Set(orderIds.keys());
+    for (const order of incoming.orders) {
+      if (!allowedOrderDisplays.has(order.id))
+        throw forbidden("Managers can only manage orders assigned to their team.");
+      if (order.assignedEmployeeId && !teamIds.has(order.assignedEmployeeId))
+        throw forbidden("Orders can only be assigned to your team.");
+    }
+    for (const task of incoming.tasks)
+      if (task.orderId && !orderIds.has(task.orderId))
+        throw forbidden("Tasks can only use orders assigned to your team.");
+    const changedSyncIds = await syncOrders(
+      database,
+      actor,
+      incoming.orders,
+      { preserveUnlisted: true },
+    );
+    if (scopedTaskIds.length)
+      await database.task.deleteMany({ where: { id: { in: scopedTaskIds } } });
+    for (const task of incoming.tasks) {
+      const created = await database.task.create({
+        data: {
+          workspaceId: actor.workspaceId,
+          orderId: task.orderId ? (orderIds.get(task.orderId) ?? null) : null,
+          leadId: task.ownerId ?? null,
+          title: task.title,
+          leadResponsibility: task.leadResponsibility ?? null,
+          status: toTaskStatus(task.status),
+          progress: task.progress,
+          tone: task.tone,
+          deadline: asDate(task.due),
+          completedAt: asDate(task.completedAt),
+        },
+      });
+      const assignees = [
+        ...(task.ownerId
+          ? [{ employeeId: task.ownerId, responsibility: task.leadResponsibility ?? "Lead", isLead: true }]
+          : []),
+        ...(task.collaborators ?? []).map((entry) => ({ ...entry, isLead: false })),
+      ];
+      if (assignees.length)
+        await database.taskAssignee.createMany({
+          data: assignees.map((entry) => ({
+            taskId: created.id,
+            userId: entry.employeeId,
+            responsibility: entry.responsibility,
+            isLead: entry.isLead,
+          })),
+        });
+    }
+    const scopedOrderIds = [...orderIds.values()];
+    if (scopedOrderIds.length) {
+      await database.payment.deleteMany({
+        where: {
+          workspaceId: actor.workspaceId,
+          orderId: { in: scopedOrderIds },
+          source: { not: PaymentSource.COMMERCE },
+        },
+      });
+      for (const payment of incoming.payments.filter(
+        (entry) => entry.source !== "Commerce",
+      )) {
+        if (!payment.orderId || !orderIds.has(payment.orderId))
+          throw forbidden("Managers can only record payments for team orders.");
+        await database.payment.create({
+          data: {
+            workspaceId: actor.workspaceId,
+            orderId: orderIds.get(payment.orderId)!,
+            displayId: payment.id,
+            customerName: payment.customer,
+            source:
+              payment.source === "Advance"
+                ? PaymentSource.ADVANCE
+                : PaymentSource.MANUAL,
+            method: payment.method,
+            providerReference: payment.upiReference || null,
+            cashPaise: BigInt(Math.round(payment.cashAmount * 100)),
+            upiPaise: BigInt(Math.round(payment.upiAmount * 100)),
+            totalPaise: BigInt(Math.round(payment.total * 100)),
+            receivedAt: new Date(payment.createdAt),
+          },
+        });
+      }
+    }
+    return changedSyncIds;
+  });
+}
+
 async function withSerializableRetry<T>(
   operation: (database: Prisma.TransactionClient) => Promise<T>,
 ) {
@@ -548,6 +775,7 @@ async function syncOrders(
   database: Prisma.TransactionClient,
   actor: NonNullable<Express.Request["actor"]>,
   orders: z.infer<typeof workspaceSchema>["orders"],
+  options?: { preserveUnlisted?: boolean },
 ) {
   const workspaceId = actor.workspaceId;
   const changedSyncIds: string[] = [];
@@ -559,11 +787,12 @@ async function syncOrders(
     where: { workspaceId },
     include: { customer: true },
   });
-  for (const imported of existing.filter(
-    (order) => order.source === "FRAMES_41" && !order.archivedAt,
-  ))
-    if (!orders.some((order) => order.id === imported.displayId))
-      throw badRequest("Frames 41 orders cannot be deleted from Desk.");
+  if (!options?.preserveUnlisted)
+    for (const imported of existing.filter(
+      (order) => order.source === "FRAMES_41" && !order.archivedAt,
+    ))
+      if (!orders.some((order) => order.id === imported.displayId))
+        throw badRequest("Frames 41 orders cannot be deleted from Desk.");
   for (const order of orders) {
     const current = existing.find((entry) => entry.displayId === order.id);
     const formId = order.formId ?? current?.customFormId ?? defaultForm?.id;

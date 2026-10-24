@@ -17,7 +17,6 @@ const connectionInput = z.object({
 });
 const formInput = z.object({
   name: z.string().trim().min(1).max(120),
-  integrationConnectionId: z.uuid(),
 });
 const formPatch = z.object({
   name: z.string().trim().min(1).max(120).optional(),
@@ -108,12 +107,7 @@ orderFormsRouter.patch(
 orderFormsRouter.get("/", async (request, response) => {
   const forms = await prisma.customOrderForm.findMany({
     where: { workspaceId: request.actor!.workspaceId, archivedAt: null },
-    include: {
-      integrationConnection: {
-        select: { id: true, clientKey: true, displayName: true, enabled: true },
-      },
-      _count: { select: { fields: true, orders: true } },
-    },
+    include: { _count: { select: { fields: true, orders: true } } },
     orderBy: [{ isDefault: "desc" }, { createdAt: "asc" }],
   });
   return ok(response, {
@@ -122,7 +116,6 @@ orderFormsRouter.get("/", async (request, response) => {
       name: form.name,
       isDefault: form.isDefault,
       enabled: form.enabled,
-      integrationConnection: form.integrationConnection,
       fieldCount: form._count.fields,
       orderCount: form._count.orders,
     })),
@@ -136,14 +129,14 @@ orderFormsRouter.post(
     const input = formInput.parse(request.body);
     const connection = await prisma.integrationConnection.findFirst({
       where: {
-        id: input.integrationConnectionId,
         workspaceId: request.actor!.workspaceId,
+        clientKey: "frames41",
         enabled: true,
       },
       select: { id: true },
     });
     if (!connection)
-      throw badRequest("Choose an enabled ecommerce connection.");
+      throw badRequest("The default order form connection is unavailable.");
     const form = await prisma.customOrderForm.create({
       data: {
         workspaceId: request.actor!.workspaceId,

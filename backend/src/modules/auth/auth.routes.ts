@@ -3,13 +3,17 @@ import rateLimit from "express-rate-limit";
 import { env } from "../../config/env.js";
 import { ok } from "../../shared/http/respond.js";
 import { requireActor } from "../../middleware/auth.js";
-import { accountUpdateSchema, credentialsSchema } from "./auth.schema.js";
+import {
+  accountUpdateSchema,
+  credentialsSchema,
+} from "./auth.schema.js";
 import {
   authenticate,
   bootstrap,
   createSession,
   destroySession,
   setupRequired,
+  signupAdmin,
   updateAccount,
 } from "./auth.service.js";
 import { getWorkspace } from "../legacy-workspace/legacy-workspace.service.js";
@@ -86,6 +90,22 @@ authRouter.post("/login", authLimit, async (request, response) => {
     csrfToken: session.csrfToken,
     workspace: await getWorkspace(user),
   });
+});
+authRouter.post("/admin-signup", authLimit, async (request, response) => {
+  const body = credentialsSchema.parse(request.body);
+  const user = await signupAdmin(body.name, body.password);
+  const session = await createSession(user.id, {
+    ...(request.ip ? { ipAddress: request.ip } : {}),
+    ...(request.header("user-agent")
+      ? { userAgent: request.header("user-agent")!.slice(0, 300) }
+      : {}),
+  });
+  setSessionCookies(response, session);
+  return ok(
+    response,
+    { user, csrfToken: session.csrfToken, workspace: await getWorkspace(user) },
+    201,
+  );
 });
 authRouter.post("/logout", async (request, response) => {
   const cookies = request.cookies as

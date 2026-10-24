@@ -22,6 +22,7 @@ const userBase = z.object({
   password: z.string().max(256).optional(),
 });
 export const employeeSchema = userBase.extend({
+  reportsToId: z.uuid().nullable().optional(),
   role: z.string().trim().min(1).max(120),
   initials: z.string().max(4),
   color: z.string().max(32),
@@ -32,6 +33,7 @@ export const employeeSchema = userBase.extend({
 });
 export const staffSchema = userBase.extend({
   role: z.enum(["Admin", "Manager"]),
+  reportsToId: z.uuid().nullable().optional(),
 });
 const collaborator = z.object({
   employeeId: z.uuid(),

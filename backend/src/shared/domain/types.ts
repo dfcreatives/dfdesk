@@ -23,6 +23,7 @@ export type ManualAttendanceEntry = {
 
 export type Employee = {
   id: string;
+  reportsToId?: string | null | undefined;
   name: string;
   role: string;
   initials: string;
@@ -40,6 +41,7 @@ export type Employee = {
 
 export type StaffMember = {
   id: string;
+  reportsToId?: string | null | undefined;
   name: string;
   role: "Admin" | "Manager";
   /** Write-only. The API never returns a password or password hash. */

@@ -58,6 +58,7 @@ export async function setManualAttendance(
       id: employeeId,
       workspaceId: actor.workspaceId,
       role: UserRole.EMPLOYEE,
+      reportsToId: actor.id,
       archivedAt: null,
     },
   });

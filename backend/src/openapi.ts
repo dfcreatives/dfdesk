@@ -6,6 +6,9 @@ const operations = {
     post: { operationId: "bootstrap", security: [] },
   },
   "/api/v1/auth/login": { post: { operationId: "login", security: [] } },
+  "/api/v1/auth/admin-signup": {
+    post: { operationId: "signupAdmin", security: [] },
+  },
   "/api/v1/auth/logout": { post: { operationId: "logout" } },
   "/api/v1/auth/session": { get: { operationId: "session", security: [] } },
   "/api/v1/auth/account": { patch: { operationId: "updateAccount" } },

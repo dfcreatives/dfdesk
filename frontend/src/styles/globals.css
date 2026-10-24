@@ -3771,15 +3771,13 @@ button {
   border-radius: 12px;
 }
 .order-setup-intro strong,
-.order-setup-panel > strong,
-.order-secret-note > strong {
+.order-setup-panel > strong {
   display: block;
   color: #25272b;
   font-size: 14px;
 }
 .order-setup-intro p,
-.order-setup-panel p,
-.order-secret-note p {
+.order-setup-panel p {
   margin: 5px 0 0;
   color: #667085;
   font-size: 12px;
@@ -3793,15 +3791,51 @@ button {
   font-size: 12px;
   font-weight: 600;
 }
+.order-setup-field {
+  display: grid;
+  gap: 10px;
+  padding: 12px;
+  border: 1px solid #e5e7eb;
+  border-radius: 9px;
+  background: #f9fafb;
+}
+.order-setup-field > strong {
+  color: #25272b;
+  font-size: 12px;
+}
+.order-setup-field > label {
+  display: grid;
+  gap: 6px;
+  color: #475569;
+  font-size: 12px;
+  font-weight: 600;
+}
 .order-form-toolbar select,
 .order-setup-panel input,
-.order-setup-panel select {
+.order-setup-panel select,
+.order-setup-panel textarea {
   width: 100%;
   min-height: 38px;
   padding: 0 10px;
   border: 1px solid #d7dce3;
   border-radius: 8px;
   background: white;
+}
+.order-setup-field textarea {
+  min-height: 72px;
+  padding: 9px 10px;
+  resize: vertical;
+}
+.order-setup-field .order-setup-required {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-weight: 500;
+}
+.order-setup-field .order-setup-required input {
+  width: 16px;
+  min-height: 16px;
+  margin: 0;
 }
 .order-form-actions {
   display: flex;
@@ -3819,14 +3853,16 @@ button {
   font-size: 12px;
   font-weight: 650;
 }
-.order-setup-button-secondary,
+.order-setup-button:disabled {
+  cursor: wait;
+  opacity: 0.65;
+}
 .order-setup-cancel {
   border-color: #d7dce3;
   background: #fff;
   color: #343a46;
 }
-.order-setup-panel,
-.order-secret-note {
+.order-setup-panel {
   display: grid;
   gap: 11px;
   padding: 13px;
@@ -3837,22 +3873,6 @@ button {
 .order-setup-actions {
   display: flex;
   gap: 8px;
-}
-.order-form-id-note {
-  display: grid;
-  gap: 5px;
-  color: #667085;
-  font-size: 11px;
-}
-.order-form-id-note code,
-.order-secret-note code {
-  overflow-wrap: anywhere;
-  color: #343a46;
-  font-size: 11px;
-}
-.order-secret-note {
-  border-color: #b7d8c0;
-  background: #f5fbf6;
 }
 .order-setup-error {
   margin: 0;

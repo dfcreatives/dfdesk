@@ -3,7 +3,6 @@ import { Navigate, Route, Routes, useLocation } from "react-router-dom";
 import { sectionFromSlug, workspaceSections } from "@/shared/navigation";
 
 const WorkspaceApp = lazy(() => import("@/features/workspace/WorkspaceApp"));
-const ApiDocsPage = lazy(() => import("@/features/api-docs/ApiDocsPage"));
 
 function RouteFallback({ label }: { label: string }) {
   return (
@@ -26,14 +25,6 @@ function WorkspaceRoute() {
 export function AppRouter() {
   return (
     <Routes>
-      <Route
-        path="/api-docs"
-        element={
-          <Suspense fallback={<RouteFallback label="Loading API docs…" />}>
-            <ApiDocsPage />
-          </Suspense>
-        }
-      />
       <Route path="/" element={<WorkspaceRoute />} />
       {workspaceSections.map(({ slug }) => (
         <Route key={slug} path={`/${slug}`} element={<WorkspaceRoute />} />

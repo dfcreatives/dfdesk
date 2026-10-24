@@ -23,6 +23,7 @@ export type ManualAttendanceEntry = {
 
 export type Employee = {
   id: string;
+  reportsToId?: string | null | undefined;
   name: string;
   role: string;
   initials: string;
@@ -40,6 +41,7 @@ export type Employee = {
 
 export type StaffMember = {
   id: string;
+  reportsToId?: string | null | undefined;
   name: string;
   role: "Admin" | "Manager";
   /** Write-only. The API never returns a password or password hash. */
@@ -145,25 +147,8 @@ export type OrderForm = {
   name: string;
   isDefault: boolean;
   enabled: boolean;
-  integrationConnection: {
-    id: string;
-    clientKey: string;
-    displayName: string;
-    enabled: boolean;
-  };
   fieldCount: number;
   orderCount: number;
-};
-
-export type EcommerceConnection = {
-  id: string;
-  clientKey: string;
-  displayName: string;
-  apiIdentity: string;
-  baseUrl: string | null;
-  enabled: boolean;
-  formCount: number;
-  legacy: boolean;
 };
 
 export type PaymentMethod = "Cash" | "UPI" | "Split" | "Razorpay";

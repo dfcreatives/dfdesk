@@ -7,7 +7,7 @@ Desk is a small operations product built as a React client and an Express API. P
 Requirements: Node.js 22+, npm 10+, and PostgreSQL 15+.
 
 ```bash
-cp .env.example .env
+cp .env.example backend/.env
 npm install
 npm run db:generate
 npm run db:migrate

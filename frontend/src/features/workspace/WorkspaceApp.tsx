@@ -35,7 +35,6 @@ import { useLocation, useNavigate } from "react-router-dom";
 import { apiRequest } from "@/api/client";
 import type {
   Employee,
-  EcommerceConnection,
   Order,
   OrderCustomFieldValue,
   OrderFieldDefinition,
@@ -91,6 +90,14 @@ type TeamAttendanceRow = {
 };
 type CollectionDetail =
   "Cash collections" | "UPI collections" | "Total collected" | "Outstanding";
+type NewFormField = {
+  id: string;
+  label: string;
+  type: OrderFieldType;
+  required: boolean;
+  options: string;
+  showInList: boolean;
+};
 const reportPeriodLabels: Record<CollectionReportPeriod, string> = {
   Daily: "Today",
   Weekly: "This week",
@@ -171,22 +178,17 @@ export default function WorkspaceApp({
     OrderFieldDefinition[]
   >([]);
   const [orderForms, setOrderForms] = useState<OrderForm[]>([]);
-  const [ecommerceConnections, setEcommerceConnections] = useState<EcommerceConnection[]>([]);
-  const [selectedConnectionId, setSelectedConnectionId] = useState("");
   const [selectedFormId, setSelectedFormId] = useState("");
-  const [orderSetupMode, setOrderSetupMode] = useState<"connection" | "form" | null>(null);
-  const [connectionName, setConnectionName] = useState("");
+  const [orderSetupMode, setOrderSetupMode] = useState<"form" | null>(null);
   const [newFormName, setNewFormName] = useState("");
-  const [newConnectionSecret, setNewConnectionSecret] = useState("");
+  const [newFormFields, setNewFormFields] = useState<NewFormField[]>([]);
+  const [formCreating, setFormCreating] = useState(false);
   const [showOrderFields, setShowOrderFields] = useState(false);
   const [editingOrderField, setEditingOrderField] =
     useState<OrderFieldDefinition | null>(null);
   const [fieldLabel, setFieldLabel] = useState("");
   const [fieldType, setFieldType] = useState<OrderFieldType>("TEXT");
   const [fieldRequired, setFieldRequired] = useState(false);
-  const [fieldShowInList, setFieldShowInList] = useState(true);
-  const [fieldPlaceholder, setFieldPlaceholder] = useState("");
-  const [fieldHelpText, setFieldHelpText] = useState("");
   const [fieldOptions, setFieldOptions] = useState("");
   const [fieldSaving, setFieldSaving] = useState(false);
   const [fieldError, setFieldError] = useState("");
@@ -195,6 +197,7 @@ export default function WorkspaceApp({
   const [employeeName, setEmployeeName] = useState("");
   const [employeeRole, setEmployeeRole] = useState("");
   const [employeePassword, setEmployeePassword] = useState("");
+  const [employeeReportsToId, setEmployeeReportsToId] = useState("");
   const [employeeSaving, setEmployeeSaving] = useState(false);
   const [employeeFormError, setEmployeeFormError] = useState("");
   const [staffData, setStaffData] = useState<StaffMember[]>(initialStaff);
@@ -203,11 +206,13 @@ export default function WorkspaceApp({
   const [staffName, setStaffName] = useState("");
   const [staffRole, setStaffRole] = useState<StaffMember["role"]>("Manager");
   const [staffPassword, setStaffPassword] = useState("");
+  const [staffReportsToId, setStaffReportsToId] = useState("");
   const [staffSaving, setStaffSaving] = useState(false);
   const [staffFormError, setStaffFormError] = useState("");
   const [deletingStaffId, setDeletingStaffId] = useState<string | null>(null);
   const [loginName, setLoginName] = useState("");
   const [loginPassword, setLoginPassword] = useState("");
+  const [authSubmitting, setAuthSubmitting] = useState(false);
   const [showLoginPassword, setShowLoginPassword] = useState(false);
   const [loginError, setLoginError] = useState("");
   const [loginFieldErrors, setLoginFieldErrors] =
@@ -223,6 +228,7 @@ export default function WorkspaceApp({
   const [syncError, setSyncError] = useState("");
   const [isSetupMode, setIsSetupMode] = useState(false);
   const [setupRequired, setSetupRequired] = useState(false);
+  const [isAdminSignupMode, setIsAdminSignupMode] = useState(false);
   const [connectedWebsiteName, setConnectedWebsiteName] = useState("Commerce");
   const [isHydrated, setIsHydrated] = useState(false);
   const skipNextWorkspaceSave = useRef(false);
@@ -365,16 +371,14 @@ export default function WorkspaceApp({
   useEffect(() => {
     if (!currentUser) return;
     let cancelled = false;
-    Promise.all([
-      apiRequest<{ forms: OrderForm[] }>("/api/v1/order-forms", { cache: "no-store" }),
-      apiRequest<{ connections: EcommerceConnection[] }>("/api/v1/order-forms/connections", { cache: "no-store" }),
-    ])
-      .then(async ([{ forms }, { connections }]) => {
+    apiRequest<{ forms: OrderForm[] }>("/api/v1/order-forms", {
+      cache: "no-store",
+    })
+      .then(async ({ forms }) => {
         if (cancelled) return;
         setOrderForms(forms);
-        setEcommerceConnections(connections);
-        setSelectedConnectionId(connections.find((entry) => entry.enabled && !entry.legacy)?.id ?? "");
-        const selected = forms.find((form) => form.isDefault)?.id ?? forms[0]?.id ?? "";
+        const selected =
+          forms.find((form) => form.isDefault)?.id ?? forms[0]?.id ?? "";
         setSelectedFormId(selected);
         if (selected) {
           const result = await apiRequest<{ fields: OrderFieldDefinition[] }>(
@@ -704,6 +708,7 @@ export default function WorkspaceApp({
     setEmployeeName(employee?.name ?? "");
     setEmployeeRole(employee?.role ?? "");
     setEmployeePassword("");
+    setEmployeeReportsToId(employee?.reportsToId ?? "");
     setEmployeeFormError("");
     setShowEmployeeForm(true);
   }
@@ -747,6 +752,10 @@ export default function WorkspaceApp({
       manualAttendance: [],
       task: "0%",
       active: editingEmployee?.active ?? true,
+      reportsToId:
+        currentUser?.role === "Manager"
+          ? currentUser.id
+          : employeeReportsToId || null,
       id: editingEmployee?.id ?? crypto.randomUUID(),
       ...(password ? { password } : {}),
     };
@@ -760,6 +769,9 @@ export default function WorkspaceApp({
             name,
             jobTitle: role,
             active: employee.active,
+            ...(currentUser?.role === "Admin"
+              ? { reportsToId: employeeReportsToId || null }
+              : {}),
             ...(password ? { password } : {}),
           }),
         });
@@ -767,7 +779,15 @@ export default function WorkspaceApp({
         setEmployeeData((current) =>
           current.map((item) =>
             item.id === editingEmployee.id
-              ? { ...item, name, role, initials }
+              ? {
+                  ...item,
+                  name,
+                  role,
+                  initials,
+                  ...(currentUser?.role === "Admin"
+                    ? { reportsToId: employeeReportsToId || null }
+                    : {}),
+                }
               : item,
           ),
         );
@@ -816,11 +836,15 @@ export default function WorkspaceApp({
     }
   }
 
-  function openStaffForm(member?: StaffMember) {
+  function openStaffForm(
+    member?: StaffMember,
+    initialRole: StaffMember["role"] = "Manager",
+  ) {
     setEditingStaff(member ?? null);
     setStaffName(member?.name ?? "");
-    setStaffRole(member?.role ?? "Manager");
+    setStaffRole(member?.role ?? initialRole);
     setStaffPassword(member?.password ?? "");
+    setStaffReportsToId(member?.reportsToId ?? "");
     setStaffFormError("");
     setShowStaffForm(true);
   }
@@ -845,12 +869,13 @@ export default function WorkspaceApp({
     try {
       if (editingStaff) {
         const { user } = await apiRequest<{
-          user: Pick<StaffMember, "id" | "name" | "role">;
+          user: Pick<StaffMember, "id" | "name" | "role" | "reportsToId">;
         }>(`/api/v1/users/${editingStaff.id}`, {
           method: "PATCH",
           body: JSON.stringify({
             name,
-            accountRole: staffRole,
+            ...(staffRole === "Manager" ? { accountRole: "Manager" } : {}),
+            reportsToId: staffReportsToId || null,
             ...(password ? { password } : {}),
           }),
         });
@@ -868,10 +893,11 @@ export default function WorkspaceApp({
         const workspace = await apiRequest<Workspace>("/api/v1/users", {
           method: "POST",
           body: JSON.stringify({
-            accountRole: staffRole,
+            accountRole: "Manager",
             name,
             role: staffRole,
             password,
+            reportsToId: staffReportsToId || null,
             attendanceSeconds: 0,
             attendanceStartedAt: null,
             attendanceRecords: [],
@@ -892,6 +918,40 @@ export default function WorkspaceApp({
       );
     } finally {
       setStaffSaving(false);
+    }
+  }
+
+  async function signupAdminAccount() {
+    if (authSubmitting) return;
+    const name = loginName.trim();
+    const fieldErrors = validateLoginCredentials(name, loginPassword);
+    setLoginFieldErrors(fieldErrors);
+    if (Object.keys(fieldErrors).length) return;
+    setLoginError("");
+    setAuthSubmitting(true);
+    try {
+      const response = await apiRequest<{
+        user: SessionUser;
+        workspace: Workspace;
+      }>("/api/auth/admin-signup", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ name, password: loginPassword }),
+      });
+      applyWorkspace(response.workspace);
+      setCurrentUser(response.user);
+      setAccountName(response.user.name);
+      setIsAdminSignupMode(false);
+      setLoginName("");
+      setLoginPassword("");
+      window.history.replaceState(null, "", "/overview");
+      navigateTo("Overview");
+    } catch (error) {
+      setLoginError(
+        error instanceof Error ? error.message : "Unable to create the Admin account.",
+      );
+    } finally {
+      setAuthSubmitting(false);
     }
   }
 
@@ -925,10 +985,12 @@ export default function WorkspaceApp({
   }
 
   async function login() {
+    if (authSubmitting) return;
     const fieldErrors = validateLoginCredentials(loginName, loginPassword);
     setLoginFieldErrors(fieldErrors);
     if (Object.keys(fieldErrors).length) return;
     setLoginError("");
+    setAuthSubmitting(true);
     try {
       const response = await apiRequest<{
         user: SessionUser;
@@ -947,15 +1009,19 @@ export default function WorkspaceApp({
       setLoginError(
         error instanceof Error ? error.message : "Unable to sign in.",
       );
+    } finally {
+      setAuthSubmitting(false);
     }
   }
 
   async function createFirstAdmin() {
+    if (authSubmitting) return;
     const name = loginName.trim();
     const fieldErrors = validateLoginCredentials(name, loginPassword);
     setLoginFieldErrors(fieldErrors);
     if (Object.keys(fieldErrors).length) return;
     setLoginError("");
+    setAuthSubmitting(true);
     try {
       const response = await apiRequest<{
         user: SessionUser;
@@ -979,6 +1045,8 @@ export default function WorkspaceApp({
           ? error.message
           : "Unable to create the workspace.",
       );
+    } finally {
+      setAuthSubmitting(false);
     }
   }
 
@@ -1433,9 +1501,6 @@ export default function WorkspaceApp({
     setFieldLabel(field?.label ?? "");
     setFieldType(field?.type ?? "TEXT");
     setFieldRequired(field?.required ?? false);
-    setFieldShowInList(field?.showInList ?? true);
-    setFieldPlaceholder(field?.placeholder ?? "");
-    setFieldHelpText(field?.helpText ?? "");
     setFieldOptions(field?.options.join("\n") ?? "");
     setFieldError("");
   }
@@ -1455,50 +1520,80 @@ export default function WorkspaceApp({
     await reloadOrderFields(formId);
   }
 
-  async function createEcommerceConnection() {
-    const displayName = connectionName.trim();
-    if (!displayName) {
-      setFieldError("Enter a name for this store.");
-      return;
-    }
-    try {
-      const result = await apiRequest<{ connection: EcommerceConnection; signingSecret: string }>(
-        "/api/v1/order-forms/connections", {
-          method: "POST", body: JSON.stringify({ displayName }),
-        },
-      );
-      setEcommerceConnections((current) => [...current, { ...result.connection, formCount: 0, legacy: false }]);
-      setSelectedConnectionId(result.connection.id);
-      setNewConnectionSecret(result.signingSecret);
-      setConnectionName("");
-      setOrderSetupMode(null);
-    } catch (error) {
-      setFieldError(error instanceof Error ? error.message : "Unable to create connection.");
-    }
-  }
-
   async function createOrderForm() {
     const name = newFormName.trim();
     if (!name) {
       setFieldError("Enter a name for this order form.");
       return;
     }
-    const connection = ecommerceConnections.find((entry) => entry.id === selectedConnectionId && entry.enabled);
-    if (!connection) {
-      setFieldError("Create an ecommerce connection first.");
+    if (!newFormFields.length || newFormFields.some((field) => !field.label.trim())) {
+      setFieldError("Add a label for each field before creating the form.");
       return;
     }
+    const fields = newFormFields.map((field) => ({
+      label: field.label.trim(),
+      type: field.type,
+      required: field.required,
+      showInList: field.showInList,
+      options: field.options
+        .split(/[\n,]/)
+        .map((option) => option.trim())
+        .filter(Boolean),
+    }));
+    const missingOptions = fields.find(
+      (field) =>
+        ["SELECT", "MULTI_SELECT"].includes(field.type) &&
+        field.options.length === 0,
+    );
+    if (missingOptions) {
+      setFieldError(`Add at least one option for “${missingOptions.label}”.`);
+      return;
+    }
+    setFormCreating(true);
     try {
-      const { form: newForm } = await apiRequest<{ form: { id: string } }>("/api/v1/order-forms", {
-        method: "POST", body: JSON.stringify({ name, integrationConnectionId: connection.id }),
-      });
-      const { forms } = await apiRequest<{ forms: OrderForm[] }>("/api/v1/order-forms", { cache: "no-store" });
+      const { form: newForm } = await apiRequest<{ form: { id: string } }>(
+        "/api/v1/order-forms",
+        {
+          method: "POST",
+          body: JSON.stringify({ name }),
+        },
+      );
+      try {
+        for (const field of fields)
+          await apiRequest("/api/v1/order-fields", {
+            method: "POST",
+            body: JSON.stringify({ formId: newForm.id, ...field }),
+          });
+      } catch (error) {
+        const { forms } = await apiRequest<{ forms: OrderForm[] }>(
+          "/api/v1/order-forms",
+          { cache: "no-store" },
+        );
+        setOrderForms(forms);
+        await selectOrderForm(newForm.id);
+        setNewFormName("");
+        setNewFormFields([]);
+        setOrderSetupMode(null);
+        setFieldError(
+          `The form was created, but a field could not be saved. ${error instanceof Error ? error.message : "Try adding it again."}`,
+        );
+        return;
+      }
+      const { forms } = await apiRequest<{ forms: OrderForm[] }>(
+        "/api/v1/order-forms",
+        { cache: "no-store" },
+      );
       setOrderForms(forms);
       await selectOrderForm(newForm.id);
       setNewFormName("");
+      setNewFormFields([]);
       setOrderSetupMode(null);
     } catch (error) {
-      setFieldError(error instanceof Error ? error.message : "Unable to create form.");
+      setFieldError(
+        error instanceof Error ? error.message : "Unable to create form.",
+      );
+    } finally {
+      setFormCreating(false);
     }
   }
 
@@ -1530,9 +1625,7 @@ export default function WorkspaceApp({
             label,
             type: fieldType,
             required: fieldRequired,
-            showInList: fieldShowInList,
-            placeholder: fieldPlaceholder.trim() || null,
-            helpText: fieldHelpText.trim() || null,
+            ...(!editingOrderField ? { showInList: true } : {}),
             options,
           }),
         },
@@ -1599,7 +1692,7 @@ export default function WorkspaceApp({
 
   function saveOrder() {
     if (!orderFieldDefinitions.length) {
-      setOrderError("Add at least one custom field before creating an order.");
+      setOrderError("Add at least one field before creating an order.");
       return;
     }
     const missingField = orderFieldDefinitions.find((field) => {
@@ -2140,7 +2233,7 @@ export default function WorkspaceApp({
         : activeNav === "People" || activeNav === "My team"
           ? visibleEmployees.map((employee) => ({
               label: employee.name,
-              meta: employee.role,
+              meta: `${employee.role} · ${employee.reportsToId ? staffData.find((member) => member.id === employee.reportsToId)?.name ?? "Manager" : "Unassigned"}`,
               value: formatAttendance(
                 getDailyAttendanceSeconds(employee, todayKey),
               ),
@@ -2151,7 +2244,7 @@ export default function WorkspaceApp({
           : activeNav === "Staff"
             ? visibleStaff.map((member) => ({
                 label: member.name,
-                meta: member.role,
+                meta: `${member.role}${member.reportsToId ? ` · Reports to ${staffData.find((admin) => admin.id === member.reportsToId)?.name ?? "Admin"}` : " · Unassigned"}`,
                 value: formatAttendance(
                   getDailyAttendanceSeconds(member, todayKey),
                 ),
@@ -2272,7 +2365,13 @@ export default function WorkspaceApp({
             noValidate
             onSubmit={(event) => {
               event.preventDefault();
-              void (isSetupMode ? createFirstAdmin() : login());
+              void (
+                isSetupMode
+                  ? createFirstAdmin()
+                : isAdminSignupMode
+                    ? signupAdminAccount()
+                    : login()
+              );
             }}
           >
             <div className="brand login-brand">
@@ -2285,15 +2384,23 @@ export default function WorkspaceApp({
               />
             </div>
             <div className="login-heading">
-              <h1>{isSetupMode ? "Create your workspace" : "Welcome back"}</h1>
+              <h1>
+                {isSetupMode
+                  ? "Create your workspace"
+                  : isAdminSignupMode
+                    ? "Create your Admin account"
+                    : "Welcome back"}
+              </h1>
               <p>
                 {isSetupMode
                   ? "Create the first administrator account for Desk."
-                  : "Enter your details to sign in to Desk."}
+                  : isAdminSignupMode
+                    ? "Create your own Desk workspace and Admin account."
+                    : "Enter your details to sign in to Desk."}
               </p>
             </div>
             <label className="input-label">
-              {isSetupMode ? "Administrator name" : "Login name"}
+              {isSetupMode || isAdminSignupMode ? "Administrator name" : "Login name"}
               <span
                 className={`login-input-shell${loginFieldErrors.name ? " invalid" : ""}`}
               >
@@ -2356,7 +2463,9 @@ export default function WorkspaceApp({
                       : undefined
                   }
                   autoComplete={
-                    isSetupMode ? "new-password" : "current-password"
+                    isSetupMode || isAdminSignupMode
+                      ? "new-password"
+                      : "current-password"
                   }
                 />
                 <button
@@ -2384,8 +2493,17 @@ export default function WorkspaceApp({
             <button
               className="button button-primary login-submit"
               type="submit"
+              disabled={authSubmitting}
             >
-              {isSetupMode ? "Create Admin account" : "Sign in"}
+              {authSubmitting
+                ? isSetupMode
+                  ? "Creating workspace…"
+                  : isAdminSignupMode
+                    ? "Creating Admin account…"
+                    : "Signing in…"
+                : isSetupMode || isAdminSignupMode
+                  ? "Create Admin account"
+                  : "Sign in"}
             </button>
             {isSetupMode ? (
               <button
@@ -2399,11 +2517,33 @@ export default function WorkspaceApp({
               >
                 Back to sign in
               </button>
+            ) : isAdminSignupMode ? (
+              <button
+                className="reset-workspace"
+                type="button"
+                onClick={() => {
+                  setIsAdminSignupMode(false);
+                  setLoginError("");
+                }}
+              >
+                Back to sign in
+              </button>
             ) : (
               <>
                 <small className="login-hint">
                   Use the account provided by your Admin or Manager.
                 </small>
+                <button
+                  className="reset-workspace"
+                  type="button"
+                  onClick={() => {
+                    setIsAdminSignupMode(true);
+                    setLoginError("");
+                    setLoginFieldErrors({});
+                  }}
+                >
+                  New Admin? Sign up
+                </button>
                 {setupRequired && (
                   <button
                     className="reset-workspace"
@@ -2547,7 +2687,9 @@ export default function WorkspaceApp({
           <p className="nav-label">Workspace</p>
           {(currentUser.role === "Employee"
             ? employeeNavigation
-            : navigation
+            : currentUser.role === "Manager"
+              ? navigation.filter(({ label }) => label !== "Staff")
+              : navigation
           ).map(({ label, icon: Icon }) => (
             <button
               key={label}
@@ -2574,16 +2716,18 @@ export default function WorkspaceApp({
                 <Users size={17} />
                 <span>People</span>
               </button>
-              <button
-                className="nav-item"
-                onClick={() => {
-                  navigateTo("Staff");
-                  setMobileMenuOpen(false);
-                }}
-              >
-                <ShieldCheck size={17} />
-                <span>Admins &amp; managers</span>
-              </button>
+              {currentUser.role === "Admin" && (
+                <button
+                  className="nav-item"
+                  onClick={() => {
+                    navigateTo("Staff");
+                    setMobileMenuOpen(false);
+                  }}
+                >
+                  <ShieldCheck size={17} />
+                  <span>Admins &amp; managers</span>
+                </button>
+              )}
               <button
                 className="nav-item"
                 onClick={() => {
@@ -3118,7 +3262,7 @@ export default function WorkspaceApp({
                 <p className="eyebrow">Order management</p>
                 <h1>Orders</h1>
                 <p className="subcopy">
-                  Every order detail is defined by your custom form.
+                  Add the details you need to each order.
                 </p>
               </div>
               <div className="orders-crud-header-actions">
@@ -3131,7 +3275,7 @@ export default function WorkspaceApp({
                     }}
                   >
                     <SlidersHorizontal size={16} />
-                    Customize fields
+                    Set up form
                   </button>
                 )}
                 <button
@@ -3309,14 +3453,16 @@ export default function WorkspaceApp({
                         Add task
                       </button>
                     )}
-                    {activeNav === "Staff" && (
-                      <button
-                        className="button button-primary compact-button"
-                        onClick={() => openStaffForm()}
-                      >
-                        <UserPlus size={15} />
-                        Add admin or manager
-                      </button>
+                    {activeNav === "Staff" && currentUser.role === "Admin" && (
+                      <>
+                        <button
+                          className="button button-secondary compact-button"
+                          onClick={() => openStaffForm(undefined, "Manager")}
+                        >
+                          <UserPlus size={15} />
+                          Add manager
+                        </button>
+                      </>
                     )}
                     {(activeNav === "Collections" ||
                       activeNav === "Reports") && (
@@ -3457,7 +3603,7 @@ export default function WorkspaceApp({
                                 </button>
                               </span>
                             )}
-                          {activeNav === "Staff" && (
+                          {activeNav === "Staff" && currentUser.role === "Admin" && (
                             <span className="row-actions">
                               <button
                                 className="icon-button"
@@ -4695,9 +4841,17 @@ export default function WorkspaceApp({
               <div>
                 <span className="modal-kicker">Workspace access</span>
                 <h2 id="staff-title">
-                  {editingStaff ? "Edit staff member" : "Add admin or manager"}
+                  {editingStaff
+                    ? "Edit staff member"
+                    : staffRole === "Admin"
+                      ? "Create admin account"
+                      : "Create manager account"}
                 </h2>
-                <p>Enter the name and access level for this staff member.</p>
+                <p>
+                  {staffRole === "Admin"
+                    ? "Create another administrator with workspace-wide access."
+                    : "Create a manager and choose which admin they report to."}
+                </p>
               </div>
               <button
                 className="icon-button"
@@ -4731,23 +4885,49 @@ export default function WorkspaceApp({
                 }
               />
             </label>
-            <span className="input-label">Access level</span>
-            <div className="method-toggle">
-              <button
-                className={staffRole === "Admin" ? "selected" : ""}
-                onClick={() => setStaffRole("Admin")}
-              >
-                <ShieldCheck size={16} />
-                Admin
-              </button>
-              <button
-                className={staffRole === "Manager" ? "selected" : ""}
-                onClick={() => setStaffRole("Manager")}
-              >
-                <Users size={16} />
-                Manager
-              </button>
-            </div>
+            {editingStaff && (
+              <>
+                <span className="input-label">Access level</span>
+                <div className="method-toggle">
+                  <button
+                    className={staffRole === "Admin" ? "selected" : ""}
+                    onClick={() => {
+                      setStaffRole("Admin");
+                      setStaffReportsToId("");
+                    }}
+                  >
+                    <ShieldCheck size={16} />
+                    Admin
+                  </button>
+                  <button
+                    className={staffRole === "Manager" ? "selected" : ""}
+                    onClick={() => setStaffRole("Manager")}
+                  >
+                    <Users size={16} />
+                    Manager
+                  </button>
+                </div>
+              </>
+            )}
+            {staffRole === "Manager" && (
+              <label className="input-label">
+                Reports to
+                <select
+                  className="form-input"
+                  value={staffReportsToId}
+                  onChange={(event) => setStaffReportsToId(event.target.value)}
+                >
+                  <option value="">Unassigned</option>
+                  {staffData
+                    .filter((member) => member.role === "Admin" && member.id !== editingStaff?.id)
+                    .map((admin) => (
+                      <option key={admin.id} value={admin.id}>
+                        {admin.name}
+                      </option>
+                    ))}
+                </select>
+              </label>
+            )}
             <button
               className="button button-primary modal-submit"
               onClick={() => void saveStaff()}
@@ -4762,8 +4942,12 @@ export default function WorkspaceApp({
                 </>
               ) : (
                 <>
-                  <UserPlus size={16} />
-                  Create staff member
+                  {staffRole === "Admin" ? (
+                    <ShieldCheck size={16} />
+                  ) : (
+                    <UserPlus size={16} />
+                  )}
+                  Create {staffRole.toLowerCase()} account
                 </>
               )}
             </button>
@@ -4823,6 +5007,29 @@ export default function WorkspaceApp({
                 placeholder="e.g. Production lead"
               />
             </label>
+            {currentUser?.role === "Admin" ? (
+              <label className="input-label">
+                Reports to
+                <select
+                  className="form-input"
+                  value={employeeReportsToId}
+                  onChange={(event) => setEmployeeReportsToId(event.target.value)}
+                >
+                  <option value="">Unassigned</option>
+                  {staffData
+                    .filter((member) => member.role === "Manager")
+                    .map((manager) => (
+                      <option key={manager.id} value={manager.id}>
+                        {manager.name}
+                      </option>
+                    ))}
+                </select>
+              </label>
+            ) : currentUser?.role === "Manager" ? (
+              <p className="input-label">
+                Reports to <strong>{currentUser.name}</strong>
+              </p>
+            ) : null}
             <label className="input-label">
               Login password
               <input
@@ -4880,8 +5087,11 @@ export default function WorkspaceApp({
             <div className="modal-header">
               <div>
                 <span className="modal-kicker">Order management</span>
-                <h2 id="order-fields-title">Customize order fields</h2>
-                <p>Add workspace-specific information to every order.</p>
+                <h2 id="order-fields-title">Set up order forms</h2>
+                <p>
+                  Create a form, choose its fields, then fill them in when you
+                  add an order.
+                </p>
               </div>
               <button
                 className="icon-button"
@@ -4894,90 +5104,196 @@ export default function WorkspaceApp({
             <div className="order-field-manager">
               <div className="order-form-toolbar">
                 <div className="order-setup-intro">
-                  <strong>Connect your store and its order forms</strong>
+                  <strong>Set up your order form</strong>
                   <p>
-                    A store is your ecommerce website or backend. A form is one
-                    checkout/custom-order form on that store. Connect each store
-                    once, then create a Desk form for every different checkout form.
+                    Choose the details to collect. Required fields must be
+                    filled in whenever you create an order.
                   </p>
                 </div>
                 <label>
-                  Order form
+                  Form
                   <select
                     value={selectedFormId}
                     onChange={(event) => void selectOrderForm(event.target.value)}
                   >
+                    {!orderForms.length && (
+                      <option value="">Create a form to get started</option>
+                    )}
                     {orderForms.map((form) => (
                       <option key={form.id} value={form.id}>
-                        {form.name} — {form.integrationConnection.displayName}
+                        {form.name}
                         {form.isDefault ? " (default)" : ""}
                       </option>
                     ))}
                   </select>
                 </label>
-                {orderForms.find((form) => form.id === selectedFormId) && (
-                  <div className="order-form-id-note">
-                    <span>This form has its own API ID</span>
-                    <code>{selectedFormId}</code>
-                  </div>
-                )}
-                {currentUser?.role === "Admin" && !newConnectionSecret && (
+                {currentUser?.role === "Admin" && (
                   <div className="order-form-actions">
-                    <button className="order-setup-button" onClick={() => { setOrderSetupMode("connection"); setFieldError(""); }}>
-                      Connect a store
+                    <button
+                      className="order-setup-button"
+                      onClick={() => {
+                        setOrderSetupMode("form");
+                        setNewFormFields([
+                          {
+                            id: crypto.randomUUID(),
+                            label: "",
+                            type: "TEXT",
+                            required: true,
+                            options: "",
+                            showInList: true,
+                          },
+                        ]);
+                        setFieldError("");
+                      }}
+                    >
+                      Create a form
                     </button>
-                    <button className="order-setup-button order-setup-button-secondary" onClick={() => { setOrderSetupMode("form"); setFieldError(""); }}>
-                      Add another order form
-                    </button>
-                  </div>
-                )}
-                {orderSetupMode === "connection" && (
-                  <div className="order-setup-panel">
-                    <strong>Connect a store</strong>
-                    <p>Give it a name you recognize, such as “Main Shopify store” or “Wholesale site”.</p>
-                    <label>
-                      Store name
-                      <input value={connectionName} onChange={(event) => setConnectionName(event.target.value)} placeholder="e.g. Main website" />
-                    </label>
-                    <div className="order-setup-actions">
-                      <button className="order-setup-button" onClick={() => void createEcommerceConnection()}>Connect store</button>
-                      <button className="order-setup-cancel" onClick={() => setOrderSetupMode(null)}>Cancel</button>
-                    </div>
                   </div>
                 )}
                 {orderSetupMode === "form" && (
                   <div className="order-setup-panel">
-                    <strong>Create an order form</strong>
-                    <p>This should match one specific checkout or custom-order form on the selected store. You can add more forms to the same store later.</p>
+                    <strong>Create a form and its fields</strong>
                     <label>
-                      Which store sends these orders?
-                      <select value={selectedConnectionId} onChange={(event) => setSelectedConnectionId(event.target.value)}>
-                        <option value="">Choose a store</option>
-                        {ecommerceConnections.filter((entry) => entry.enabled && !entry.legacy).map((entry) => (
-                          <option key={entry.id} value={entry.id}>{entry.displayName} — store connection</option>
-                        ))}
-                      </select>
+                      Form name
+                      <input
+                        value={newFormName}
+                        onChange={(event) => setNewFormName(event.target.value)}
+                        placeholder="e.g. Custom order"
+                      />
                     </label>
-                    <label>
-                      Order form name
-                      <input value={newFormName} onChange={(event) => setNewFormName(event.target.value)} placeholder="e.g. Custom photo-book order" />
-                    </label>
+                    {newFormFields.map((field, index) => (
+                      <div className="order-setup-field" key={field.id}>
+                        <strong>Field {index + 1}</strong>
+                        <label>
+                          Field label
+                          <input
+                            value={field.label}
+                            onChange={(event) =>
+                              setNewFormFields((current) =>
+                                current.map((entry) =>
+                                  entry.id === field.id
+                                    ? { ...entry, label: event.target.value }
+                                    : entry,
+                                ),
+                              )
+                            }
+                            placeholder="e.g. Delivery instructions"
+                          />
+                        </label>
+                        <label>
+                          Field type
+                          <select
+                            value={field.type}
+                            onChange={(event) =>
+                              setNewFormFields((current) =>
+                                current.map((entry) =>
+                                  entry.id === field.id
+                                    ? { ...entry, type: event.target.value as OrderFieldType }
+                                    : entry,
+                                ),
+                              )
+                            }
+                          >
+                            <option value="TEXT">Short text</option>
+                            <option value="TEXTAREA">Long text</option>
+                            <option value="NUMBER">Number</option>
+                            <option value="CURRENCY">Currency</option>
+                            <option value="DATE">Date</option>
+                            <option value="PHONE">Phone</option>
+                            <option value="EMAIL">Email</option>
+                            <option value="SELECT">Dropdown</option>
+                            <option value="MULTI_SELECT">Multiple choice</option>
+                            <option value="CHECKBOX">Checkbox</option>
+                          </select>
+                        </label>
+                        {["SELECT", "MULTI_SELECT"].includes(field.type) && (
+                          <label>
+                            Options
+                            <textarea
+                              value={field.options}
+                              onChange={(event) =>
+                                setNewFormFields((current) =>
+                                  current.map((entry) =>
+                                    entry.id === field.id
+                                      ? { ...entry, options: event.target.value }
+                                      : entry,
+                                  ),
+                                )
+                              }
+                              placeholder="One option per line"
+                            />
+                          </label>
+                        )}
+                        <label className="order-setup-required">
+                          <input
+                            type="checkbox"
+                            checked={field.required}
+                            onChange={(event) =>
+                              setNewFormFields((current) =>
+                                current.map((entry) =>
+                                  entry.id === field.id
+                                    ? { ...entry, required: event.target.checked }
+                                    : entry,
+                                ),
+                              )
+                            }
+                          />
+                          Required
+                        </label>
+                        {newFormFields.length > 1 && (
+                          <button
+                            className="order-setup-cancel"
+                            onClick={() =>
+                              setNewFormFields((current) =>
+                                current.filter((entry) => entry.id !== field.id),
+                              )
+                            }
+                          >
+                            Remove field
+                          </button>
+                        )}
+                      </div>
+                    ))}
                     <div className="order-setup-actions">
-                      <button className="order-setup-button" onClick={() => void createOrderForm()}>Create order form</button>
-                      <button className="order-setup-cancel" onClick={() => setOrderSetupMode(null)}>Cancel</button>
+                      <button
+                        className="order-setup-cancel"
+                        onClick={() =>
+                          setNewFormFields((current) => [
+                            ...current,
+                            {
+                              id: crypto.randomUUID(),
+                              label: "",
+                              type: "TEXT",
+                              required: false,
+                              options: "",
+                              showInList: true,
+                            },
+                          ])
+                        }
+                      >
+                        Add field
+                      </button>
+                      <button
+                        className="order-setup-button"
+                        onClick={() => void createOrderForm()}
+                        disabled={formCreating}
+                      >
+                        {formCreating ? "Creating…" : "Create form"}
+                      </button>
+                      <button
+                        className="order-setup-cancel"
+                        onClick={() => setOrderSetupMode(null)}
+                      >
+                        Cancel
+                      </button>
                     </div>
                   </div>
                 )}
-                {newConnectionSecret && (
-                  <div className="order-secret-note">
-                    <strong>Store connected. Save this API secret.</strong>
-                    <p>This is a private key for your ecommerce server. Whoever configures the API on that server will need it to send orders to Desk. It is only shown once; connecting the store alone does not send orders.</p>
-                    <code>{newConnectionSecret}</code>
-                    <button className="order-setup-cancel" onClick={() => void navigator.clipboard?.writeText(newConnectionSecret)}>Copy secret</button>
-                    <button className="order-setup-button" onClick={() => { setNewConnectionSecret(""); setOrderSetupMode("form"); }}>I saved it — create the first form</button>
-                  </div>
+                {fieldError && (
+                  <p className="order-setup-error" role="alert">
+                    {fieldError}
+                  </p>
                 )}
-                {fieldError && <p className="order-setup-error" role="alert">{fieldError}</p>}
               </div>
               <div className="order-field-list">
                 {orderFieldDefinitions.length ? (
@@ -5029,15 +5345,23 @@ export default function WorkspaceApp({
                 ) : (
                   <div className="order-fields-empty">
                     <SlidersHorizontal size={20} />
-                    <strong>No custom fields yet</strong>
-                    <small>Create the first field using the form below.</small>
+                    <strong>
+                      {selectedFormId
+                        ? "No fields yet"
+                        : "Create a form first"}
+                    </strong>
+                    <small>
+                      {selectedFormId
+                        ? "Add the details you want to collect below."
+                        : "Create a form to start adding fields."}
+                    </small>
                   </div>
                 )}
               </div>
               <div className="order-field-editor">
                 <div className="order-field-editor-title">
                   <strong>
-                    {editingOrderField ? "Edit field" : "Add a custom field"}
+                    {editingOrderField ? "Edit field" : "Add a field"}
                   </strong>
                   {editingOrderField && (
                     <button
@@ -5089,26 +5413,6 @@ export default function WorkspaceApp({
                     />
                   </label>
                 )}
-                {fieldType !== "CHECKBOX" && (
-                  <label className="input-label">
-                    Placeholder (optional)
-                    <input
-                      className="form-input"
-                      value={fieldPlaceholder}
-                      onChange={(event) =>
-                        setFieldPlaceholder(event.target.value)
-                      }
-                    />
-                  </label>
-                )}
-                <label className="input-label">
-                  Help text (optional)
-                  <input
-                    className="form-input"
-                    value={fieldHelpText}
-                    onChange={(event) => setFieldHelpText(event.target.value)}
-                  />
-                </label>
                 <div className="order-field-switches">
                   <label>
                     <input
@@ -5120,21 +5424,11 @@ export default function WorkspaceApp({
                     />
                     Required
                   </label>
-                  <label>
-                    <input
-                      type="checkbox"
-                      checked={fieldShowInList}
-                      onChange={(event) =>
-                        setFieldShowInList(event.target.checked)
-                      }
-                    />
-                    Show in order list
-                  </label>
                 </div>
                 {fieldError && <p className="payment-error">{fieldError}</p>}
                 <button
                   className="button button-primary modal-submit"
-                  disabled={fieldSaving}
+                  disabled={fieldSaving || !selectedFormId}
                   onClick={() => void saveOrderField()}
                 >
                   <Check size={16} />
@@ -5181,8 +5475,7 @@ export default function WorkspaceApp({
             {orderFieldDefinitions.length > 0 ? (
               <section className="order-custom-fields">
                 <div className="order-custom-fields-heading">
-                  <span className="modal-kicker">Order details</span>
-                  <small>Fully generated from your custom form</small>
+                  <span className="modal-kicker">Enter order details</span>
                 </div>
                 {orderFieldDefinitions.map((field) => {
                   const value = orderCustomFields[field.key];
@@ -5326,8 +5619,10 @@ export default function WorkspaceApp({
             ) : (
               <div className="orders-crud-empty custom-order-empty">
                 <SlidersHorizontal size={20} />
-                <strong>No form fields configured</strong>
-                <small>Close this form and customize fields first.</small>
+                <strong>No fields yet</strong>
+                <small>
+                  Close this form and add fields before entering an order.
+                </small>
               </div>
             )}
             {orderError && <p className="payment-error">{orderError}</p>}

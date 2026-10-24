@@ -73,21 +73,21 @@ enum OrderFieldType {
 }
 
 model Workspace {
-  id          String                  @id @default(uuid()) @db.Uuid
-  name        String                  @db.VarChar(120)
-  slug        String                  @unique @db.VarChar(80)
-  createdAt   DateTime                @default(now()) @map("created_at") @db.Timestamptz(3)
-  updatedAt   DateTime                @updatedAt @map("updated_at") @db.Timestamptz(3)
-  users       User[]
-  tasks       Task[]
-  customers   Customer[]
-  orders      Order[]
-  payments    Payment[]
-  connections IntegrationConnection[]
-  auditLogs   AuditLog[]
-  migrations  MigrationRun[]
+  id                    String                  @id @default(uuid()) @db.Uuid
+  name                  String                  @db.VarChar(120)
+  slug                  String                  @unique @db.VarChar(80)
+  createdAt             DateTime                @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt             DateTime                @updatedAt @map("updated_at") @db.Timestamptz(3)
+  users                 User[]
+  tasks                 Task[]
+  customers             Customer[]
+  orders                Order[]
+  payments              Payment[]
+  connections           IntegrationConnection[]
+  auditLogs             AuditLog[]
+  migrations            MigrationRun[]
   orderFieldDefinitions OrderFieldDefinition[]
-  customOrderForms CustomOrderForm[]
+  customOrderForms      CustomOrderForm[]
 
   @@map("workspaces")
   @@schema("desk")
@@ -96,6 +96,7 @@ model Workspace {
 model User {
   id               String               @id @default(uuid()) @db.Uuid
   workspaceId      String               @map("workspace_id") @db.Uuid
+  reportsToId      String?              @map("reports_to_id") @db.Uuid
   loginName        String               @map("login_name") @db.VarChar(80)
   normalizedName   String               @map("normalized_name") @db.VarChar(80)
   passwordHash     String               @map("password_hash")
@@ -109,6 +110,8 @@ model User {
   createdAt        DateTime             @default(now()) @map("created_at") @db.Timestamptz(3)
   updatedAt        DateTime             @updatedAt @map("updated_at") @db.Timestamptz(3)
   workspace        Workspace            @relation(fields: [workspaceId], references: [id], onDelete: Restrict)
+  reportsTo        User?                @relation("UserReporting", fields: [reportsToId], references: [id], onDelete: SetNull)
+  directReports    User[]               @relation("UserReporting")
   sessions         Session[]
   attendance       AttendanceSession[]
   manualAttendance ManualAttendance[]   @relation("AttendanceUser")
@@ -121,6 +124,7 @@ model User {
 
   @@unique([workspaceId, normalizedName])
   @@index([workspaceId, role, archivedAt])
+  @@index([workspaceId, reportsToId, role])
   @@map("users")
   @@schema("desk")
 }
@@ -230,53 +234,53 @@ model Customer {
 }
 
 model Order {
-  id                  String               @id @default(uuid()) @db.Uuid
-  workspaceId         String               @map("workspace_id") @db.Uuid
-  customerId          String               @map("customer_id") @db.Uuid
-  assignedUserId      String?              @map("assigned_user_id") @db.Uuid
-  displayId           String               @map("display_id") @db.VarChar(80)
-  source              OrderSource          @default(DESK)
-  externalOrderId     String?              @map("external_order_id") @db.VarChar(160)
-  customFormId        String?              @map("custom_form_id") @db.Uuid
-  integrationConnectionId String?           @map("integration_connection_id") @db.Uuid
-  externalOrderNumber String?              @map("external_order_number") @db.VarChar(160)
-  importPayloadHash   String?              @map("import_payload_hash") @db.Char(64)
-  itemSummary         String               @map("item_summary") @db.VarChar(500)
-  status              String               @db.VarChar(80)
-  color               String               @db.VarChar(40)
-  commerceStatus      String?              @map("commerce_status") @db.VarChar(80)
-  promisedDeliveryAt  DateTime?            @map("promised_delivery_at") @db.Timestamptz(3)
-  deadline            DateTime?            @db.Date
-  placedAt            DateTime?            @map("placed_at") @db.Timestamptz(3)
-  paidAt              DateTime?            @map("paid_at") @db.Timestamptz(3)
-  subtotalPaise       BigInt               @default(0) @map("subtotal_paise")
-  discountPaise       BigInt               @default(0) @map("discount_paise")
-  shippingPaise       BigInt               @default(0) @map("shipping_paise")
-  totalPaise          BigInt               @default(0) @map("total_paise")
-  paidPaise           BigInt               @default(0) @map("paid_paise")
-  balanceDuePaise     BigInt               @default(0) @map("balance_due_paise")
-  currency            String               @default("INR") @db.Char(3)
-  syncStatus          SyncStatus           @default(NONE) @map("sync_status")
-  syncEventId         String?              @map("sync_event_id") @db.Uuid
-  syncVersion         Int?                 @map("sync_version")
-  syncAttemptedAt     DateTime?            @map("sync_attempted_at") @db.Timestamptz(3)
-  syncError           String?              @map("sync_error") @db.VarChar(500)
-  syncPayload         Json?                @map("sync_payload")
-  version             Int                  @default(1)
-  archivedAt          DateTime?            @map("archived_at") @db.Timestamptz(3)
-  createdAt           DateTime             @default(now()) @map("created_at") @db.Timestamptz(3)
-  updatedAt           DateTime             @updatedAt @map("updated_at") @db.Timestamptz(3)
-  workspace           Workspace            @relation(fields: [workspaceId], references: [id], onDelete: Restrict)
-  customForm          CustomOrderForm?      @relation(fields: [customFormId], references: [id], onDelete: SetNull)
-  integrationConnection IntegrationConnection? @relation(fields: [integrationConnectionId], references: [id], onDelete: SetNull)
-  customer            Customer             @relation(fields: [customerId], references: [id], onDelete: Restrict)
-  assignedUser        User?                @relation("OrderAssignee", fields: [assignedUserId], references: [id], onDelete: SetNull)
-  address             OrderAddress?
-  items               OrderItem[]
-  payments            Payment[]
-  statusHistory       OrderStatusHistory[]
-  tasks               Task[]
-  customFieldValues   OrderCustomFieldValue[]
+  id                      String                  @id @default(uuid()) @db.Uuid
+  workspaceId             String                  @map("workspace_id") @db.Uuid
+  customerId              String                  @map("customer_id") @db.Uuid
+  assignedUserId          String?                 @map("assigned_user_id") @db.Uuid
+  displayId               String                  @map("display_id") @db.VarChar(80)
+  source                  OrderSource             @default(DESK)
+  externalOrderId         String?                 @map("external_order_id") @db.VarChar(160)
+  customFormId            String?                 @map("custom_form_id") @db.Uuid
+  integrationConnectionId String?                 @map("integration_connection_id") @db.Uuid
+  externalOrderNumber     String?                 @map("external_order_number") @db.VarChar(160)
+  importPayloadHash       String?                 @map("import_payload_hash") @db.Char(64)
+  itemSummary             String                  @map("item_summary") @db.VarChar(500)
+  status                  String                  @db.VarChar(80)
+  color                   String                  @db.VarChar(40)
+  commerceStatus          String?                 @map("commerce_status") @db.VarChar(80)
+  promisedDeliveryAt      DateTime?               @map("promised_delivery_at") @db.Timestamptz(3)
+  deadline                DateTime?               @db.Date
+  placedAt                DateTime?               @map("placed_at") @db.Timestamptz(3)
+  paidAt                  DateTime?               @map("paid_at") @db.Timestamptz(3)
+  subtotalPaise           BigInt                  @default(0) @map("subtotal_paise")
+  discountPaise           BigInt                  @default(0) @map("discount_paise")
+  shippingPaise           BigInt                  @default(0) @map("shipping_paise")
+  totalPaise              BigInt                  @default(0) @map("total_paise")
+  paidPaise               BigInt                  @default(0) @map("paid_paise")
+  balanceDuePaise         BigInt                  @default(0) @map("balance_due_paise")
+  currency                String                  @default("INR") @db.Char(3)
+  syncStatus              SyncStatus              @default(NONE) @map("sync_status")
+  syncEventId             String?                 @map("sync_event_id") @db.Uuid
+  syncVersion             Int?                    @map("sync_version")
+  syncAttemptedAt         DateTime?               @map("sync_attempted_at") @db.Timestamptz(3)
+  syncError               String?                 @map("sync_error") @db.VarChar(500)
+  syncPayload             Json?                   @map("sync_payload")
+  version                 Int                     @default(1)
+  archivedAt              DateTime?               @map("archived_at") @db.Timestamptz(3)
+  createdAt               DateTime                @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt               DateTime                @updatedAt @map("updated_at") @db.Timestamptz(3)
+  workspace               Workspace               @relation(fields: [workspaceId], references: [id], onDelete: Restrict)
+  customForm              CustomOrderForm?        @relation(fields: [customFormId], references: [id], onDelete: SetNull)
+  integrationConnection   IntegrationConnection?  @relation(fields: [integrationConnectionId], references: [id], onDelete: SetNull)
+  customer                Customer                @relation(fields: [customerId], references: [id], onDelete: Restrict)
+  assignedUser            User?                   @relation("OrderAssignee", fields: [assignedUserId], references: [id], onDelete: SetNull)
+  address                 OrderAddress?
+  items                   OrderItem[]
+  payments                Payment[]
+  statusHistory           OrderStatusHistory[]
+  tasks                   Task[]
+  customFieldValues       OrderCustomFieldValue[]
 
   @@unique([workspaceId, displayId])
   @@unique([integrationConnectionId, externalOrderId])
@@ -286,23 +290,23 @@ model Order {
 }
 
 model OrderFieldDefinition {
-  id          String         @id @default(uuid()) @db.Uuid
-  workspaceId String         @map("workspace_id") @db.Uuid
-  formId      String         @map("form_id") @db.Uuid
-  key         String         @db.VarChar(80)
-  label       String         @db.VarChar(120)
+  id          String                  @id @default(uuid()) @db.Uuid
+  workspaceId String                  @map("workspace_id") @db.Uuid
+  formId      String                  @map("form_id") @db.Uuid
+  key         String                  @db.VarChar(80)
+  label       String                  @db.VarChar(120)
   type        OrderFieldType
-  required    Boolean        @default(false)
-  placeholder String?        @db.VarChar(160)
-  helpText    String?        @map("help_text") @db.VarChar(300)
+  required    Boolean                 @default(false)
+  placeholder String?                 @db.VarChar(160)
+  helpText    String?                 @map("help_text") @db.VarChar(300)
   options     Json?
-  position    Int            @default(0)
-  showInList  Boolean        @default(false) @map("show_in_list")
-  archivedAt  DateTime?      @map("archived_at") @db.Timestamptz(3)
-  createdAt   DateTime       @default(now()) @map("created_at") @db.Timestamptz(3)
-  updatedAt   DateTime       @updatedAt @map("updated_at") @db.Timestamptz(3)
-  workspace   Workspace      @relation(fields: [workspaceId], references: [id], onDelete: Restrict)
-  form        CustomOrderForm @relation(fields: [formId], references: [id], onDelete: Restrict)
+  position    Int                     @default(0)
+  showInList  Boolean                 @default(false) @map("show_in_list")
+  archivedAt  DateTime?               @map("archived_at") @db.Timestamptz(3)
+  createdAt   DateTime                @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt   DateTime                @updatedAt @map("updated_at") @db.Timestamptz(3)
+  workspace   Workspace               @relation(fields: [workspaceId], references: [id], onDelete: Restrict)
+  form        CustomOrderForm         @relation(fields: [formId], references: [id], onDelete: Restrict)
   values      OrderCustomFieldValue[]
 
   @@unique([formId, key])
@@ -414,18 +418,18 @@ model OrderStatusHistory {
 }
 
 model IntegrationConnection {
-  id              String    @id @default(uuid()) @db.Uuid
-  workspaceId     String    @map("workspace_id") @db.Uuid
-  clientKey       String    @map("client_key") @db.VarChar(80)
-  apiIdentity     String    @map("api_identity") @db.VarChar(80)
-  displayName     String    @map("display_name") @db.VarChar(120)
-  baseUrl         String?   @map("base_url") @db.Text
-  enabled         Boolean   @default(true)
-  lastHealthyAt   DateTime? @map("last_healthy_at") @db.Timestamptz(3)
-  lastHealthError String?   @map("last_health_error") @db.VarChar(500)
-  createdAt       DateTime  @default(now()) @map("created_at") @db.Timestamptz(3)
-  updatedAt       DateTime  @updatedAt @map("updated_at") @db.Timestamptz(3)
-  workspace       Workspace @relation(fields: [workspaceId], references: [id], onDelete: Restrict)
+  id              String            @id @default(uuid()) @db.Uuid
+  workspaceId     String            @map("workspace_id") @db.Uuid
+  clientKey       String            @map("client_key") @db.VarChar(80)
+  apiIdentity     String            @map("api_identity") @db.VarChar(80)
+  displayName     String            @map("display_name") @db.VarChar(120)
+  baseUrl         String?           @map("base_url") @db.Text
+  enabled         Boolean           @default(true)
+  lastHealthyAt   DateTime?         @map("last_healthy_at") @db.Timestamptz(3)
+  lastHealthError String?           @map("last_health_error") @db.VarChar(500)
+  createdAt       DateTime          @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt       DateTime          @updatedAt @map("updated_at") @db.Timestamptz(3)
+  workspace       Workspace         @relation(fields: [workspaceId], references: [id], onDelete: Restrict)
   forms           CustomOrderForm[]
   orders          Order[]
 

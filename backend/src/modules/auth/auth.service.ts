@@ -1,4 +1,5 @@
 import { Prisma, UserRole } from "@prisma/client";
+import { randomUUID } from "node:crypto";
 import { prisma } from "../../lib/prisma.js";
 import {
   conflict,
@@ -46,6 +47,23 @@ export async function bootstrap(name: string, password: string) {
         const workspace = await database.workspace.create({
           data: { name: "Desk", slug: "desk" },
         });
+        const connection = await database.integrationConnection.create({
+          data: {
+            workspaceId: workspace.id,
+            clientKey: "frames41",
+            apiIdentity: "frames41",
+            displayName: "Frames 41",
+            baseUrl: env().FRAMES41_API_URL ?? null,
+          },
+        });
+        await database.customOrderForm.create({
+          data: {
+            workspaceId: workspace.id,
+            integrationConnectionId: connection.id,
+            name: "Default form",
+            isDefault: true,
+          },
+        });
         return database.user.create({
           data: {
             workspaceId: workspace.id,
@@ -65,6 +83,58 @@ export async function bootstrap(name: string, password: string) {
       error.code === "P2002"
     )
       throw conflict("Workspace setup is already complete.", "SETUP_COMPLETE");
+    throw error;
+  }
+}
+
+export async function signupAdmin(
+  name: string,
+  password: string,
+) {
+  const passwordHash = await hashPassword(password);
+  try {
+    const user = await prisma.$transaction(async (database) => {
+      const workspace = await database.workspace.create({
+        data: {
+          name: `${name.trim()}'s Desk`,
+          slug: `desk-${randomUUID()}`,
+        },
+      });
+      const connection = await database.integrationConnection.create({
+        data: {
+          workspaceId: workspace.id,
+          clientKey: "frames41",
+          apiIdentity: "frames41",
+          displayName: "Frames 41",
+          baseUrl: env().FRAMES41_API_URL ?? null,
+        },
+      });
+      await database.customOrderForm.create({
+        data: {
+          workspaceId: workspace.id,
+          integrationConnectionId: connection.id,
+          name: "Default form",
+          isDefault: true,
+        },
+      });
+      const created = await database.user.create({
+        data: {
+          workspaceId: workspace.id,
+          loginName: name.trim(),
+          normalizedName: name.trim().toLocaleLowerCase(),
+          passwordHash,
+          role: UserRole.ADMIN,
+        },
+      });
+      return publicUser(created);
+    });
+    return user;
+  } catch (error) {
+    if (
+      error instanceof Prisma.PrismaClientKnownRequestError &&
+      error.code === "P2002"
+    )
+      throw conflict("Unable to create the Admin workspace. Please try again.");
     throw error;
   }
 }
